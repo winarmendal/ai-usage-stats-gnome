@@ -2,17 +2,51 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-UUID="codex-stats@winarmendal.local"
-OLD_UUID="codexbar@inled.es"
+UUID="codex-stats@winarmendal.github.io"
+LEGACY_UUID="codex-stats@winarmendal.local"
 EXTENSIONS_DIR="${HOME}/.local/share/gnome-shell/extensions"
 TARGET_DIR="${EXTENSIONS_DIR}/${UUID}"
-OLD_DIR="${EXTENSIONS_DIR}/${OLD_UUID}"
+LEGACY_DIR="${EXTENSIONS_DIR}/${LEGACY_UUID}"
 
-if gnome-extensions info "${OLD_UUID}" >/dev/null 2>&1; then
-  gnome-extensions disable "${OLD_UUID}" >/dev/null 2>&1 || true
-  gnome-extensions uninstall "${OLD_UUID}" >/dev/null 2>&1 || true
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--help]
+
+Installs Codex Stats from this source checkout as ${UUID}.
+
+Codex Stats uses a GNOME Shell extension UUID in the form
+extension-id@namespace. The namespace is tied to the public project owner
+rather than a local machine name.
+
+For public installs, prefer the packaged GitHub Release zip:
+  gnome-extensions install --force codex-stats@winarmendal.github.io.shell-extension.zip
+  gnome-extensions enable codex-stats@winarmendal.github.io
+
+Options:
+  -h, --help  Show this help text.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if gnome-extensions info "${LEGACY_UUID}" >/dev/null 2>&1 || [[ -d "${LEGACY_DIR}" ]]; then
+  gnome-extensions disable "${LEGACY_UUID}" >/dev/null 2>&1 || true
+  gnome-extensions uninstall "${LEGACY_UUID}" >/dev/null 2>&1 || true
+  rm -rf "${LEGACY_DIR}"
 fi
-rm -rf "${OLD_DIR}"
 
 rm -rf "${TARGET_DIR}"
 mkdir -p "${TARGET_DIR}/helper" "${TARGET_DIR}/schemas"

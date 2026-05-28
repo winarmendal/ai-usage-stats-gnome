@@ -17,14 +17,23 @@ Confirm:
 
 ## Manual GNOME Check
 
+For the public release bundle:
+
+```bash
+./scripts/package.sh
+gnome-extensions install --force dist/codex-stats@winarmendal.github.io.shell-extension.zip
+gnome-extensions enable codex-stats@winarmendal.github.io
+```
+
+For a source-checkout install:
+
 ```bash
 ./scripts/install.sh
 ```
 
 Then verify:
 
-- old `codexbar@inled.es` is removed if present
-- `codex-stats@winarmendal.local` can be enabled
+- `codex-stats@winarmendal.github.io` can be enabled
 - top-bar label shows Day, 5h, and Week
 - popover tabs switch correctly
 - preferences open and persist
@@ -32,5 +41,10 @@ Then verify:
 
 ## Publish
 
-Create a GitHub release from the tagged commit and attach the bundle from `dist/`.
+Create a GitHub release from the tagged commit and attach only:
 
+```text
+dist/codex-stats@winarmendal.github.io.shell-extension.zip
+```
+
+Release notes should state that this is a manual GitHub zip install and is not yet listed on Extension Manager. Extension Manager support requires a later `extensions.gnome.org` review pass.

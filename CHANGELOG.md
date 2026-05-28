@@ -7,4 +7,4 @@
 - Added local Python helper for Codex JSONL `token_count` aggregation.
 - Added Day, Week, Month, and 3M history views.
 - Added preferences, install/uninstall/package scripts, smoke tests, and public documentation.
-
+- Changed public UUID to `codex-stats@winarmendal.github.io`.

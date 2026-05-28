@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-UUID="codex-stats@winarmendal.local"
+UUID="codex-stats@winarmendal.github.io"
 TARGET_DIR="${HOME}/.local/share/gnome-shell/extensions/${UUID}"
 
 gnome-extensions disable "${UUID}" >/dev/null 2>&1 || true
@@ -13,4 +13,3 @@ if [[ "${1:-}" == "--purge-cache" ]]; then
 fi
 
 echo "Uninstalled ${UUID}"
-

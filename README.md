@@ -25,7 +25,22 @@ It reads only `token_count` metadata events from local Codex JSONL session logs 
 
 This project is currently built and tested for GNOME Shell 50. Wider shell-version support should be validated before changing `metadata.json`.
 
+## Install From GitHub Release
+
+Download `codex-stats@winarmendal.github.io.shell-extension.zip` from the latest GitHub Release, then install it:
+
+```bash
+gnome-extensions install --force codex-stats@winarmendal.github.io.shell-extension.zip
+gnome-extensions enable codex-stats@winarmendal.github.io
+```
+
+On GNOME Wayland, you may need to log out and back in if GNOME Shell has not indexed the newly installed extension UUID yet. After re-login, run the enable command again.
+
+Codex Stats is not listed on Extension Manager yet. Extension Manager visibility requires publishing through `extensions.gnome.org`, which is planned for a later release.
+
 ## Install From Source
+
+Source installs are intended for development and local testing:
 
 ```bash
 git clone https://github.com/winarmendal/codex-stats-gnome.git
@@ -33,13 +48,13 @@ cd codex-stats-gnome
 ./scripts/install.sh
 ```
 
-On GNOME Wayland, you may need to log out and back in before GNOME Shell indexes a newly installed local extension. After re-login:
+After re-login, enable the source install with:
 
 ```bash
-gnome-extensions enable codex-stats@winarmendal.local
+gnome-extensions enable codex-stats@winarmendal.github.io
 ```
 
-The install script removes the older `codexbar@inled.es` extension if it is present, then installs Codex Stats as `codex-stats@winarmendal.local`.
+Codex Stats installs as `codex-stats@winarmendal.github.io`. It does not inspect, disable, uninstall, or remove other Codex-related extensions.
 
 ## Package
 
@@ -47,7 +62,7 @@ The install script removes the older `codexbar@inled.es` extension if it is pres
 ./scripts/package.sh
 ```
 
-The extension bundle is written to `dist/`.
+The extension bundle is written to `dist/`. Existing `*.shell-extension.zip` files in `dist/` are removed first so stale UUID bundles do not get attached to releases by mistake.
 
 ## Development
 
@@ -84,6 +99,7 @@ To also remove the local helper cache:
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Product requirements](docs/PRD.md)
 - [Privacy](docs/PRIVACY.md)
 - [Release checklist](docs/RELEASE.md)
 - [Contributing](CONTRIBUTING.md)
@@ -92,4 +108,3 @@ To also remove the local helper cache:
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
