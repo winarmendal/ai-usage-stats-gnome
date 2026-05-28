@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.codex-stats" path="/org/gnome/shell/extensions/codex-stats/">
+    <key name="refresh-interval" type="i">
+      <default>60</default>
+      <summary>Refresh interval in seconds</summary>
+      <description>How often Codex Stats refreshes local Codex usage data.</description>
+    </key>
+    <key name="log-root" type="s">
+      <default>'~/.codex/sessions'</default>
+      <summary>Codex session log root</summary>
+      <description>Directory containing local Codex JSONL session logs.</description>
+    </key>
+    <key name="show-day" type="b">
+      <default>true</default>
+      <summary>Show daily token burn in the panel</summary>
+    </key>
+    <key name="show-primary" type="b">
+      <default>true</default>
+      <summary>Show short-window remaining usage in the panel</summary>
+    </key>
+    <key name="show-secondary" type="b">
+      <default>true</default>
+      <summary>Show weekly remaining usage in the panel</summary>
+    </key>
+    <key name="cache-enabled" type="b">
+      <default>true</default>
+      <summary>Enable helper cache</summary>
+      <description>Store parsed token_count metadata in the user cache directory for faster refreshes.</description>
+    </key>
+  </schema>
+</schemalist>

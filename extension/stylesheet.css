@@ -1,0 +1,135 @@
+.codex-stats-panel-button {
+    -natural-hpadding: 6px;
+    -minimum-hpadding: 4px;
+}
+
+.codex-stats-panel-box {
+    spacing: 5px;
+}
+
+.codex-stats-panel-icon {
+    icon-size: 14px;
+}
+
+.codex-stats-popup {
+    min-width: 360px;
+}
+
+.codex-stats-header {
+    padding: 10px 12px 8px;
+    spacing: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.codex-stats-title {
+    font-weight: bold;
+    font-size: 1.05em;
+}
+
+.codex-stats-subtitle,
+.codex-stats-muted {
+    color: #b8b8b8;
+    font-size: 0.85em;
+}
+
+.codex-stats-error {
+    color: #ff7800;
+    font-size: 0.85em;
+}
+
+.codex-stats-icon-button {
+    padding: 5px;
+    border-radius: 5px;
+}
+
+.codex-stats-icon-button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.codex-stats-summary {
+    padding: 10px 12px 6px;
+    spacing: 6px;
+}
+
+.codex-stats-metric-row {
+    spacing: 8px;
+}
+
+.codex-stats-metric-label {
+    width: 58px;
+    color: #d8d8d8;
+}
+
+.codex-stats-metric-value {
+    font-weight: bold;
+}
+
+.codex-stats-metric-detail {
+    width: 82px;
+    color: #b8b8b8;
+    font-size: 0.85em;
+}
+
+.codex-stats-tabs {
+    padding: 8px 12px;
+    spacing: 6px;
+}
+
+.codex-stats-tab {
+    padding: 5px 10px;
+    border-radius: 6px;
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.codex-stats-tab:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.codex-stats-tab-active {
+    background-color: #3584e4;
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.codex-stats-content {
+    padding: 0 12px 12px;
+    spacing: 5px;
+}
+
+.codex-stats-section-title {
+    color: #eeeeee;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.codex-stats-bar-row {
+    spacing: 8px;
+    min-height: 18px;
+}
+
+.codex-stats-bar-label {
+    width: 48px;
+    color: #cfcfcf;
+    font-size: 0.85em;
+}
+
+.codex-stats-bar-wrap {
+    width: 120px;
+    height: 8px;
+    margin-top: 5px;
+    background-color: rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+}
+
+.codex-stats-bar-fill {
+    height: 8px;
+    background-color: #62a0ea;
+    border-radius: 4px;
+}
+
+.codex-stats-bar-value {
+    width: 64px;
+    color: #d8d8d8;
+    font-size: 0.85em;
+}
+

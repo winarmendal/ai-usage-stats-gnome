@@ -1,0 +1,11 @@
+{
+  "uuid": "codex-stats@winarmendal.local",
+  "name": "Codex Stats",
+  "description": "Local-first Codex token usage and limit stats for the GNOME panel.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.codex-stats",
+  "gettext-domain": "codex-stats",
+  "url": "https://github.com/winarmendal/codex-stats-gnome",
+  "version": 1
+}
+
