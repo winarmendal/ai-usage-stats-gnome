@@ -13,6 +13,7 @@ Codex Stats is a local-first GNOME Shell extension that shows Codex token usage 
 - Expanding More Stats reveals Day, Week, Month, and 3M history tabs.
 - Historical stats show hourly burn for today, daily burn for the last 7 local days, daily burn for the current local month, and monthly totals for the last 3 calendar months.
 - Missing logs or rate-limit data should show `--` and a concise status message instead of crashing.
+- Rate-limit display should ignore expired reset windows and prefer the highest used percentage in the current reset window when sessions append conflicting 5-hour or weekly limit metadata.
 
 ## Identity And Installation
 
@@ -27,6 +28,7 @@ Codex Stats is a local-first GNOME Shell extension that shows Codex token usage 
 
 - Parse only `event_msg` / `token_count` metadata events from `~/.codex/sessions/**/*.jsonl`.
 - Sum `payload.info.last_token_usage.total_tokens`.
+- Select 5-hour and weekly rate-limit status independently. Expired `resets_at` snapshots must not override a current window; if no current snapshot exists, roll the expired window forward and show it as freshly reset.
 - Use only local logs as the source of truth.
 - Never display or parse prompt text, assistant text, file contents, cookies, API tokens, or browser data.
 - Do not call OpenAI, ChatGPT, or other network APIs in v1.

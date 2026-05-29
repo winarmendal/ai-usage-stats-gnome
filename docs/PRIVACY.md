@@ -17,7 +17,7 @@ type = event_msg
 payload.type = token_count
 ```
 
-From those records it reads token counts, model context size, rate-limit percentages, rate-limit windows, reset timestamps, and event timestamps.
+From those records it reads token counts, model context size, rate-limit percentages, rate-limit windows, reset timestamps, and event timestamps. It also infers the session start timestamp from the JSONL filename when choosing between conflicting rate-limit snapshots.
 
 ## What It Does Not Read
 
@@ -45,4 +45,3 @@ The optional cache is stored at:
 ```
 
 It contains parsed token metadata and file scan metadata only.
-

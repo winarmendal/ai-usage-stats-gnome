@@ -12,7 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "helper"))
 import codex_stats_helper as helper
 
 
-def token_event(timestamp: str, total: int, primary: float = 25.0, secondary: float = 40.0) -> dict:
+def token_event(
+    timestamp: str,
+    total: int,
+    primary: float = 25.0,
+    secondary: float = 40.0,
+    primary_resets_at: int = 1779998881,
+    secondary_resets_at: int = 1780182909,
+) -> dict:
     return {
         "timestamp": timestamp,
         "type": "event_msg",
@@ -29,8 +36,8 @@ def token_event(timestamp: str, total: int, primary: float = 25.0, secondary: fl
                 "model_context_window": 237500,
             },
             "rate_limits": {
-                "primary": {"used_percent": primary, "window_minutes": 300, "resets_at": 1779998881},
-                "secondary": {"used_percent": secondary, "window_minutes": 10080, "resets_at": 1780182909},
+                "primary": {"used_percent": primary, "window_minutes": 300, "resets_at": primary_resets_at},
+                "secondary": {"used_percent": secondary, "window_minutes": 10080, "resets_at": secondary_resets_at},
             },
         },
     }
@@ -57,7 +64,7 @@ class HelperTests(unittest.TestCase):
             self.write_jsonl(
                 root / "one.jsonl",
                 [
-                    token_event("2026-05-27T23:50:00+07:00", 999),
+                    token_event("2026-05-27T23:50:00+07:00", 999, primary=5, secondary=20),
                     token_event("2026-05-28T00:15:00+07:00", 100, primary=10, secondary=30),
                     token_event("2026-05-28T13:30:00+07:00", 250, primary=20, secondary=40),
                 ],
@@ -138,7 +145,91 @@ class HelperTests(unittest.TestCase):
             self.assertEqual(second["today"]["total_tokens"], 175)
             self.assertGreaterEqual(second["status"]["files_parsed"], 1)
 
+    def test_expired_rate_limit_does_not_override_current_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            cache = Path(tmp) / "cache.json"
+
+            self.write_jsonl(
+                root / "mixed.jsonl",
+                [
+                    token_event(
+                        "2026-05-29T11:20:00+07:00",
+                        100,
+                        primary=1,
+                        primary_resets_at=1780046258,
+                    ),
+                    token_event(
+                        "2026-05-29T11:28:00+07:00",
+                        50,
+                        primary=12,
+                        primary_resets_at=1780028145,
+                    ),
+                ],
+            )
+
+            payload = self.build(root, cache, "2026-05-29T11:29:00+07:00")
+
+            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 99.0)
+            self.assertEqual(payload["limits"]["primary"]["resets_at"], "2026-05-29T16:17:38+07:00")
+
+    def test_expired_rate_limit_rolls_forward_when_no_current_window_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            cache = Path(tmp) / "cache.json"
+
+            self.write_jsonl(
+                root / "stale.jsonl",
+                [
+                    token_event(
+                        "2026-05-29T11:28:00+07:00",
+                        50,
+                        primary=12,
+                        primary_resets_at=1780028145,
+                    ),
+                ],
+            )
+
+            payload = self.build(root, cache, "2026-05-29T11:29:00+07:00")
+
+            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 100.0)
+            self.assertEqual(payload["limits"]["primary"]["resets_at"], "2026-05-29T16:15:45+07:00")
+
+    def test_higher_current_window_usage_wins_when_sessions_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            cache = Path(tmp) / "cache.json"
+
+            self.write_jsonl(
+                root / "rollout-2026-05-29T11-01-36-newer.jsonl",
+                [
+                    token_event(
+                        "2026-05-29T11:31:37+07:00",
+                        100,
+                        primary=1,
+                        primary_resets_at=1780046258,
+                    ),
+                ],
+            )
+            self.write_jsonl(
+                root / "rollout-2026-05-26T23-50-18-older.jsonl",
+                [
+                    token_event(
+                        "2026-05-29T11:31:56+07:00",
+                        50,
+                        primary=6,
+                        primary_resets_at=1780046258,
+                    ),
+                ],
+            )
+
+            payload = self.build(root, cache, "2026-05-29T11:32:00+07:00")
+
+            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 94.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

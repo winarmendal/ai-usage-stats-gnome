@@ -13,6 +13,8 @@ The extension lives in `extension/` and uses GNOME Shell ES modules:
 
 The extension refreshes every 60 seconds by default.
 
+Manual refresh runs once immediately and once again a few seconds later, because Codex can update its own usage display before the corresponding `token_count` event is appended to JSONL.
+
 ## Helper
 
 The helper lives in `helper/codex_stats_helper.py`.
@@ -22,7 +24,7 @@ It scans `~/.codex/sessions/**/*.jsonl`, parses only `event_msg` events whose pa
 The helper aggregates:
 
 - today total tokens and hourly buckets
-- latest 5-hour and weekly rate-limit metadata
+- 5-hour and weekly rate-limit metadata, selected independently from current reset windows
 - last 7 days
 - current month by day
 - last 3 months by month
@@ -33,7 +35,8 @@ The helper stores parsed metadata in `~/.cache/codex-stats/cache.json`.
 
 Cache keys include file path, size, and mtime. If a JSONL file changes, that file is parsed again. The cache stores token metadata only, not prompt or response text.
 
+Rate-limit selection ignores expired reset windows. When multiple sessions report the same active window, the helper prefers the highest used percentage because Codex limit usage should only increase until the window resets.
+
 ## Packaging
 
 `scripts/package.sh` stages the extension, compiles schemas, and runs `gnome-extensions pack`. Generated bundles go to `dist/` and are not committed.
-

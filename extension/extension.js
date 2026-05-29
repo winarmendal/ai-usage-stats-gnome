@@ -36,6 +36,7 @@ export default class CodexStatsExtension extends Extension {
         this._signals = [];
         this._themeSignals = [];
         this._timeoutId = null;
+        this._followupRefreshId = null;
         this._activeView = 'day';
         this._statsExpanded = false;
         this._data = null;
@@ -83,6 +84,10 @@ export default class CodexStatsExtension extends Extension {
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);
             this._timeoutId = null;
+        }
+        if (this._followupRefreshId) {
+            GLib.source_remove(this._followupRefreshId);
+            this._followupRefreshId = null;
         }
 
         if (this._settings) {
@@ -230,7 +235,7 @@ export default class CodexStatsExtension extends Extension {
         });
     }
 
-    async _refreshData(force = false) {
+    async _refreshData(force = false, followup = false) {
         if (this._loading && !force)
             return;
 
@@ -260,7 +265,20 @@ export default class CodexStatsExtension extends Extension {
             this._loading = false;
             this._updatePanel();
             this._updateMenu();
+            if (force && !followup)
+                this._scheduleFollowupRefresh();
         }
+    }
+
+    _scheduleFollowupRefresh() {
+        if (this._followupRefreshId)
+            GLib.source_remove(this._followupRefreshId);
+
+        this._followupRefreshId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
+            this._followupRefreshId = null;
+            this._refreshData(true, true);
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _runHelper() {

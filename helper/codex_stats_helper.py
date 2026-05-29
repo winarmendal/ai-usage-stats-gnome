@@ -14,19 +14,29 @@ from typing import Any
 
 DEFAULT_LOG_ROOT = Path.home() / ".codex" / "sessions"
 DEFAULT_CACHE_FILE = Path.home() / ".cache" / "codex-stats" / "cache.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
 class TokenEvent:
     ts: float
     total_tokens: int
+    session_ts: float = 0.0
     primary_used: float | None = None
     primary_window: int | None = None
     primary_resets_at: float | None = None
     secondary_used: float | None = None
     secondary_window: int | None = None
     secondary_resets_at: float | None = None
+
+
+@dataclass(frozen=True)
+class LimitSnapshot:
+    ts: float
+    session_ts: float
+    used_percent: float | None
+    window_minutes: int | None
+    resets_at: float | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,6 +81,21 @@ def iter_log_files(log_root: Path) -> list[Path]:
     return sorted(path for path in log_root.rglob("*.jsonl") if path.is_file())
 
 
+def parse_session_timestamp(path: Path, local_tz: timezone) -> float:
+    prefix = "rollout-"
+    stamp_length = len("2026-05-29T11-01-36")
+    name = path.name
+    if not name.startswith(prefix):
+        return 0.0
+
+    stamp = name[len(prefix) : len(prefix) + stamp_length]
+    try:
+        parsed = datetime.strptime(stamp, "%Y-%m-%dT%H-%M-%S")
+    except ValueError:
+        return 0.0
+    return parsed.replace(tzinfo=local_tz).timestamp()
+
+
 def load_cache(cache_file: Path) -> dict[str, Any]:
     try:
         with cache_file.open("r", encoding="utf-8") as handle:
@@ -95,7 +120,7 @@ def save_cache(cache_file: Path, cache: dict[str, Any]) -> None:
         pass
 
 
-def extract_event(payload: dict[str, Any], local_tz: timezone) -> TokenEvent | None:
+def extract_event(payload: dict[str, Any], local_tz: timezone, session_ts: float) -> TokenEvent | None:
     if payload.get("type") != "event_msg":
         return None
     event_payload = payload.get("payload")
@@ -123,6 +148,7 @@ def extract_event(payload: dict[str, Any], local_tz: timezone) -> TokenEvent | N
     return TokenEvent(
         ts=timestamp.timestamp(),
         total_tokens=max(0, total_tokens),
+        session_ts=session_ts,
         primary_used=number_or_none(primary.get("used_percent")),
         primary_window=int_or_none(primary.get("window_minutes")),
         primary_resets_at=number_or_none(primary.get("resets_at")),
@@ -153,6 +179,7 @@ def int_or_none(value: Any) -> int | None:
 def parse_file(path: Path, local_tz: timezone) -> tuple[list[TokenEvent], int]:
     events: list[TokenEvent] = []
     malformed = 0
+    session_ts = parse_session_timestamp(path, local_tz)
     try:
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -166,7 +193,7 @@ def parse_file(path: Path, local_tz: timezone) -> tuple[list[TokenEvent], int]:
                     continue
                 if not isinstance(payload, dict):
                     continue
-                event = extract_event(payload, local_tz)
+                event = extract_event(payload, local_tz, session_ts)
                 if event is not None:
                     events.append(event)
     except OSError:
@@ -255,13 +282,86 @@ def bucket_label_for_window(window_minutes: int | None) -> str:
     return f"{days}d"
 
 
-def limit_payload(prefix: str, event: TokenEvent | None, local_tz: timezone) -> dict[str, Any]:
-    if event is None:
+def limit_snapshot(prefix: str, event: TokenEvent) -> LimitSnapshot:
+    return LimitSnapshot(
+        ts=event.ts,
+        session_ts=event.session_ts,
+        used_percent=getattr(event, f"{prefix}_used"),
+        window_minutes=getattr(event, f"{prefix}_window"),
+        resets_at=getattr(event, f"{prefix}_resets_at"),
+    )
+
+
+def roll_reset_forward(resets_at: float | None, window_minutes: int | None, now_ts: float) -> float | None:
+    if resets_at is None or window_minutes is None or window_minutes <= 0:
+        return resets_at
+    if resets_at > now_ts:
+        return resets_at
+
+    window_seconds = window_minutes * 60
+    missed_windows = int((now_ts - resets_at) // window_seconds) + 1
+    return resets_at + missed_windows * window_seconds
+
+
+def reset_generation(snapshot: LimitSnapshot) -> int:
+    if snapshot.resets_at is None or snapshot.window_minutes is None or snapshot.window_minutes <= 0:
+        return 0
+    return int(snapshot.resets_at // (snapshot.window_minutes * 60))
+
+
+def limit_sort_key(snapshot: LimitSnapshot) -> tuple[int, float, float, float]:
+    used = snapshot.used_percent if snapshot.used_percent is not None else -1.0
+    return (
+        reset_generation(snapshot),
+        used,
+        snapshot.ts,
+        snapshot.resets_at or 0.0,
+    )
+
+
+def select_limit_snapshot(events: list[TokenEvent], prefix: str, now: datetime) -> LimitSnapshot | None:
+    now_ts = now.timestamp()
+    active: list[LimitSnapshot] = []
+    expired: list[LimitSnapshot] = []
+
+    for event in events:
+        if event.ts > now_ts:
+            continue
+
+        snapshot = limit_snapshot(prefix, event)
+        if snapshot.used_percent is None:
+            continue
+
+        if snapshot.resets_at is not None and snapshot.resets_at <= now_ts:
+            expired.append(snapshot)
+            continue
+
+        active.append(snapshot)
+
+    if active:
+        return max(active, key=limit_sort_key)
+
+    if not expired:
+        return None
+
+    latest_expired = max(expired, key=limit_sort_key)
+    rolled_reset = roll_reset_forward(latest_expired.resets_at, latest_expired.window_minutes, now_ts)
+    return LimitSnapshot(
+        ts=latest_expired.ts,
+        session_ts=latest_expired.session_ts,
+        used_percent=0.0,
+        window_minutes=latest_expired.window_minutes,
+        resets_at=rolled_reset,
+    )
+
+
+def limit_payload(snapshot: LimitSnapshot | None, local_tz: timezone) -> dict[str, Any]:
+    if snapshot is None:
         return {"label": "--", "remaining_percent": None, "used_percent": None, "resets_at": None}
 
-    used = getattr(event, f"{prefix}_used")
-    window = getattr(event, f"{prefix}_window")
-    resets_at = getattr(event, f"{prefix}_resets_at")
+    used = snapshot.used_percent
+    window = snapshot.window_minutes
+    resets_at = snapshot.resets_at
     if used is None:
         return {"label": bucket_label_for_window(window), "remaining_percent": None, "used_percent": None, "resets_at": None}
 
@@ -294,16 +394,14 @@ def aggregate(events: list[TokenEvent], now: datetime, stats: dict[str, int], lo
         month = add_months(three_month_start, i)
         three_month_buckets[month.strftime("%Y-%m")] = 0
 
-    latest_limit_event: TokenEvent | None = None
+    limit_events: list[TokenEvent] = []
 
     for event in events:
         event_dt = datetime.fromtimestamp(event.ts, tz=local_tz)
         if event_dt > now:
             continue
 
-        if latest_limit_event is None or event.ts > latest_limit_event.ts:
-            if event.primary_used is not None or event.secondary_used is not None:
-                latest_limit_event = event
+        limit_events.append(event)
 
         if day_start <= event_dt <= now:
             hourly[event_dt.hour] += event.total_tokens
@@ -340,8 +438,8 @@ def aggregate(events: list[TokenEvent], now: datetime, stats: dict[str, int], lo
             "hourly": hourly,
         },
         "limits": {
-            "primary": limit_payload("primary", latest_limit_event, local_tz),
-            "secondary": limit_payload("secondary", latest_limit_event, local_tz),
+            "primary": limit_payload(select_limit_snapshot(limit_events, "primary", now), local_tz),
+            "secondary": limit_payload(select_limit_snapshot(limit_events, "secondary", now), local_tz),
         },
         "history": {
             "week": [
