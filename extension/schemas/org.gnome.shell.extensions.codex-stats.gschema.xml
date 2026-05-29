@@ -23,6 +23,11 @@
       <default>true</default>
       <summary>Show weekly remaining usage in the panel</summary>
     </key>
+    <key name="panel-show-usage" type="b">
+      <default>false</default>
+      <summary>Show usage next to the panel icon</summary>
+      <description>When enabled, the top bar shows compact 5h and weekly remaining percentages next to the icon.</description>
+    </key>
     <key name="cache-enabled" type="b">
       <default>true</default>
       <summary>Enable helper cache</summary>

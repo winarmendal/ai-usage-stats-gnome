@@ -1,10 +1,14 @@
 .codex-stats-panel-button {
-    -natural-hpadding: 6px;
-    -minimum-hpadding: 4px;
+    -natural-hpadding: 10px;
+    -minimum-hpadding: 10px;
 }
 
 .codex-stats-panel-box {
     spacing: 5px;
+}
+
+.codex-stats-panel-label {
+    font-weight: bold;
 }
 
 .codex-stats-panel-icon {
@@ -12,13 +16,13 @@
 }
 
 .codex-stats-popup {
-    min-width: 360px;
+    min-width: 410px;
 }
 
 .codex-stats-header {
     padding: 10px 12px 8px;
     spacing: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    border-bottom: 1px solid rgba(128, 128, 128, 0.28);
 }
 
 .codex-stats-title {
@@ -28,8 +32,8 @@
 
 .codex-stats-subtitle,
 .codex-stats-muted {
-    color: #b8b8b8;
     font-size: 0.85em;
+    opacity: 0.68;
 }
 
 .codex-stats-error {
@@ -38,12 +42,10 @@
 }
 
 .codex-stats-icon-button {
-    padding: 5px;
-    border-radius: 5px;
-}
-
-.codex-stats-icon-button:hover {
-    background-color: rgba(255, 255, 255, 0.12);
+    min-width: 26px;
+    min-height: 26px;
+    padding: 4px;
+    border-radius: 6px;
 }
 
 .codex-stats-summary {
@@ -53,11 +55,12 @@
 
 .codex-stats-metric-row {
     spacing: 8px;
+    min-height: 20px;
 }
 
 .codex-stats-metric-label {
-    width: 58px;
-    color: #d8d8d8;
+    width: 62px;
+    opacity: 0.86;
 }
 
 .codex-stats-metric-value {
@@ -65,30 +68,51 @@
 }
 
 .codex-stats-metric-detail {
-    width: 82px;
-    color: #b8b8b8;
+    width: 108px;
     font-size: 0.85em;
+    opacity: 0.68;
+}
+
+.codex-stats-more-button {
+    margin: 4px 12px 8px;
+    padding: 7px 9px;
+    border-radius: 7px;
+}
+
+.codex-stats-more-content {
+    spacing: 8px;
+}
+
+.codex-stats-more-label {
+    font-weight: bold;
+}
+
+.codex-stats-more-icon {
+    opacity: 0.68;
 }
 
 .codex-stats-tabs {
-    padding: 8px 12px;
+    padding: 0 12px 8px;
     spacing: 6px;
 }
 
 .codex-stats-tab {
+    min-width: 44px;
     padding: 5px 10px;
     border-radius: 6px;
-    background-color: rgba(255, 255, 255, 0.06);
-}
-
-.codex-stats-tab:hover {
-    background-color: rgba(255, 255, 255, 0.12);
 }
 
 .codex-stats-tab-active {
-    background-color: #3584e4;
-    color: #ffffff;
+    background-color: -st-accent-color;
+    color: -st-accent-fg-color;
     font-weight: bold;
+}
+
+.codex-stats-tab-active:focus,
+.codex-stats-tab-active:active,
+.codex-stats-tab-active:hover {
+    background-color: -st-accent-color;
+    color: -st-accent-fg-color;
 }
 
 .codex-stats-content {
@@ -97,39 +121,50 @@
 }
 
 .codex-stats-section-title {
-    color: #eeeeee;
     font-weight: bold;
     margin-bottom: 4px;
 }
 
+.codex-stats-series-scroll {
+    min-height: 72px;
+}
+
+.codex-stats-series {
+    spacing: 4px;
+}
+
 .codex-stats-bar-row {
     spacing: 8px;
-    min-height: 18px;
+    min-height: 19px;
 }
 
 .codex-stats-bar-label {
-    width: 48px;
-    color: #cfcfcf;
+    width: 56px;
     font-size: 0.85em;
+    opacity: 0.76;
 }
 
 .codex-stats-bar-wrap {
-    width: 120px;
+    width: 170px;
     height: 8px;
     margin-top: 5px;
-    background-color: rgba(255, 255, 255, 0.10);
+    background-color: st-transparentize(-st-accent-color, 0.82);
     border-radius: 4px;
 }
 
 .codex-stats-bar-fill {
     height: 8px;
-    background-color: #62a0ea;
+    background-color: -st-accent-color;
     border-radius: 4px;
 }
 
 .codex-stats-bar-value {
-    width: 64px;
-    color: #d8d8d8;
+    width: 70px;
     font-size: 0.85em;
+    opacity: 0.78;
 }
 
+.codex-stats-bar-row-muted .codex-stats-bar-label,
+.codex-stats-bar-row-muted .codex-stats-bar-value {
+    opacity: 0.45;
+}

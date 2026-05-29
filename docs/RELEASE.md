@@ -34,8 +34,10 @@ For a source-checkout install:
 Then verify:
 
 - `codex-stats@winarmendal.github.io` can be enabled
-- top-bar label shows Day, 5h, and Week
-- popover tabs switch correctly
+- top bar defaults to the bundled Codex Stats icon only
+- enabling compact panel usage shows 5h and Week percentages only
+- panel icon and popover remain legible in GNOME light and dark mode
+- More Stats expands and the popover tabs switch correctly
 - preferences open and persist
 - no prompt or response text appears in the UI
 

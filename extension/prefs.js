@@ -10,7 +10,7 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
 
         const page = new Adw.PreferencesPage({
             title: _('Codex Stats'),
-            icon_name: 'utilities-system-monitor-symbolic',
+            icon_name: 'utilities-terminal-symbolic',
         });
         window.add(page);
 
@@ -60,23 +60,12 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
         });
         page.add(panelGroup);
 
-        const showDayRow = new Adw.SwitchRow({
-            title: _('Show daily token burn'),
+        const panelUsageRow = new Adw.SwitchRow({
+            title: _('Show usage next to icon'),
+            subtitle: _('Displays 5h and weekly remaining percentages in the top bar.'),
         });
-        settings.bind('show-day', showDayRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        panelGroup.add(showDayRow);
-
-        const showPrimaryRow = new Adw.SwitchRow({
-            title: _('Show 5h remaining'),
-        });
-        settings.bind('show-primary', showPrimaryRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        panelGroup.add(showPrimaryRow);
-
-        const showSecondaryRow = new Adw.SwitchRow({
-            title: _('Show weekly remaining'),
-        });
-        settings.bind('show-secondary', showSecondaryRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        panelGroup.add(showSecondaryRow);
+        settings.bind('panel-show-usage', panelUsageRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        panelGroup.add(panelUsageRow);
 
         const privacyGroup = new Adw.PreferencesGroup({
             title: _('Privacy'),
@@ -91,4 +80,3 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
         privacyGroup.add(privacyRow);
     }
 }
-

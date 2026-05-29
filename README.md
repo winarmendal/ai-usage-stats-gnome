@@ -8,10 +8,12 @@ It reads only `token_count` metadata events from local Codex JSONL session logs 
 
 ## Features
 
-- Top-bar usage summary: `Codex  Day 1.2M  5h 99%  Week 60%`
+- Top-bar icon by default, with optional compact usage: `5h 99%  Week 60%`
+- Bundled Codex Stats panel icon, so CLI-only users do not need the Codex desktop app icon installed
+- Theme-aware GNOME Shell styling for light and dark mode
 - Click popover with today, 5-hour remaining, and weekly remaining stats
-- Day, Week, Month, and 3M token history views
-- Preferences for refresh interval, log root, panel sections, and cache usage
+- Collapsed More Stats section with Day, Week, Month, and 3M token history views
+- Preferences for refresh interval, log root, compact panel usage, and cache usage
 - Python stdlib helper with cache-aware JSONL parsing
 - Local-only privacy model with no OpenAI or ChatGPT API calls
 

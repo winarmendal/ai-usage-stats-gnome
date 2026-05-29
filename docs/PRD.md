@@ -6,8 +6,11 @@ Codex Stats is a local-first GNOME Shell extension that shows Codex token usage 
 
 ## Product Behavior
 
-- Top bar shows a compact summary such as `Codex  Day 1.2M  5h 99%  Week 60%`.
-- Click popover shows today's token burn, 5-hour remaining usage, weekly remaining usage, reset times, refresh and preferences buttons, and Day, Week, Month, and 3M history tabs.
+- Top bar shows the Codex Stats icon by default, with an option to show compact remaining usage such as `5h 99%  Week 60%`.
+- The panel icon is bundled with Codex Stats and must not depend on the Codex desktop app being installed.
+- Panel and popover styling should follow the active GNOME Shell theme and remain legible in light and dark mode.
+- Click popover shows today's token burn, 5-hour remaining usage, weekly remaining usage, reset times, refresh and preferences buttons, and a collapsed More Stats section.
+- Expanding More Stats reveals Day, Week, Month, and 3M history tabs.
 - Historical stats show hourly burn for today, daily burn for the last 7 local days, daily burn for the current local month, and monthly totals for the last 3 calendar months.
 - Missing logs or rate-limit data should show `--` and a concise status message instead of crashing.
 

@@ -49,12 +49,13 @@ if gnome-extensions info "${LEGACY_UUID}" >/dev/null 2>&1 || [[ -d "${LEGACY_DIR
 fi
 
 rm -rf "${TARGET_DIR}"
-mkdir -p "${TARGET_DIR}/helper" "${TARGET_DIR}/schemas"
+mkdir -p "${TARGET_DIR}/helper" "${TARGET_DIR}/icons" "${TARGET_DIR}/schemas"
 
 cp "${ROOT_DIR}/extension/metadata.json" "${TARGET_DIR}/"
 cp "${ROOT_DIR}/extension/extension.js" "${TARGET_DIR}/"
 cp "${ROOT_DIR}/extension/prefs.js" "${TARGET_DIR}/"
 cp "${ROOT_DIR}/extension/stylesheet.css" "${TARGET_DIR}/"
+cp "${ROOT_DIR}/extension/icons/"*.svg "${TARGET_DIR}/icons/"
 cp "${ROOT_DIR}/extension/schemas/org.gnome.shell.extensions.codex-stats.gschema.xml" "${TARGET_DIR}/schemas/"
 cp "${ROOT_DIR}/helper/codex_stats_helper.py" "${TARGET_DIR}/helper/"
 chmod +x "${TARGET_DIR}/helper/codex_stats_helper.py"
