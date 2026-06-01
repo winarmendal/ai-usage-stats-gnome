@@ -13,18 +13,18 @@ The extension lives in `extension/` and uses GNOME Shell ES modules:
 
 The extension refreshes every 60 seconds by default.
 
-Manual refresh runs once immediately and once again a few seconds later, because Codex can update its own usage display before the corresponding `token_count` event is appended to JSONL.
+Manual refresh runs once immediately and then polls a few more times over the next several seconds. Rate-limit percentages also use realtime account snapshots and live local metadata when available, because Codex can update its own usage display before the corresponding `token_count` event is appended to JSONL.
 
 ## Helper
 
 The helper lives in `helper/codex_stats_helper.py`.
 
-It scans `~/.codex/sessions/**/*.jsonl`, parses only `event_msg` events whose payload type is `token_count`, and emits one JSON object for the extension.
+It scans `~/.codex/sessions/**/*.jsonl`, parses only `event_msg` events whose payload type is `token_count`, and emits one JSON object for the extension. For fresher 5-hour and weekly percentages, it can also read structured `codex.rate_limits` metadata events from `~/.codex/logs_2.sqlite` and ask the local Codex CLI for `account/rateLimits/read`.
 
 The helper aggregates:
 
 - today total tokens and hourly buckets
-- 5-hour and weekly rate-limit metadata, selected independently from current reset windows
+- 5-hour and weekly rate-limit metadata, selected independently from current reset windows and overlaid with realtime account/local `codex.rate_limits` events when available
 - last 7 days
 - current month by day
 - last 3 months by month
@@ -35,7 +35,7 @@ The helper stores parsed metadata in `~/.cache/codex-stats/cache.json`.
 
 Cache keys include file path, size, and mtime. If a JSONL file changes, that file is parsed again. The cache stores token metadata only, not prompt or response text.
 
-Rate-limit selection ignores expired reset windows. When multiple sessions report the same active window, the helper prefers the highest used percentage because Codex limit usage should only increase until the window resets.
+Rate-limit selection first prefers the realtime account snapshot from the local Codex CLI, then fresher live local `codex.rate_limits` events. If a live event does not include reset metadata, the helper keeps the reset/window from JSONL. Without live metadata, it ignores expired reset windows and uses the newest valid JSONL snapshot.
 
 ## Packaging
 

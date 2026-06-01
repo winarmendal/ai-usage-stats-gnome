@@ -16,7 +16,7 @@
 }
 
 .codex-stats-popup {
-    min-width: 410px;
+    min-width: 450px;
 }
 
 .codex-stats-header {
@@ -68,7 +68,7 @@
 }
 
 .codex-stats-metric-detail {
-    width: 108px;
+    width: 154px;
     font-size: 0.85em;
     opacity: 0.68;
 }

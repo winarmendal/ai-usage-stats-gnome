@@ -6,6 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
+import shutil
+import sqlite3
+import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +19,14 @@ from typing import Any
 
 DEFAULT_LOG_ROOT = Path.home() / ".codex" / "sessions"
 DEFAULT_CACHE_FILE = Path.home() / ".cache" / "codex-stats" / "cache.json"
+DEFAULT_LIVE_LOG_DB = Path.home() / ".codex" / "logs_2.sqlite"
+DEFAULT_CODEX_BIN = ""
+DEFAULT_LIMIT_WINDOWS = {"primary": 300, "secondary": 10080}
+LIVE_LIMIT_EVENT_TYPE = "codex.rate_limits"
+LIVE_LIMIT_ROW_LIMIT = 100
+LIVE_LIMIT_MAX_AGE_SECONDS = 24 * 60 * 60
+LIVE_LIMIT_NEWER_TOLERANCE_SECONDS = 2
+ACCOUNT_LIMIT_TIMEOUT_SECONDS = 5.0
 SCHEMA_VERSION = 2
 
 
@@ -37,6 +50,7 @@ class LimitSnapshot:
     used_percent: float | None
     window_minutes: int | None
     resets_at: float | None
+    source: str = "jsonl"
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,7 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="print JSON output")
     parser.add_argument("--log-root", default=str(DEFAULT_LOG_ROOT), help="Codex sessions directory")
     parser.add_argument("--cache-file", default=str(DEFAULT_CACHE_FILE), help="cache JSON path")
+    parser.add_argument("--live-log-db", default=str(DEFAULT_LIVE_LOG_DB), help="Codex live log SQLite path")
+    parser.add_argument("--codex-bin", default=DEFAULT_CODEX_BIN, help="Codex CLI path for realtime account limits")
     parser.add_argument("--no-cache", action="store_true", help="disable cache reads and writes")
+    parser.add_argument("--no-live-limits", action="store_true", help="disable live rate-limit reads from Codex logs")
+    parser.add_argument("--no-account-limits", action="store_true", help="disable realtime account rate-limit reads from Codex CLI")
     parser.add_argument("--now", default="", help="override current time as ISO-8601, for tests")
     return parser.parse_args()
 
@@ -251,6 +269,304 @@ def collect_events(log_root: Path, cache_file: Path, use_cache: bool, local_tz: 
     return events, stats
 
 
+def extract_balanced_json_object(text: str, start: int) -> str | None:
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+
+    return None
+
+
+def iter_live_rate_limit_events(text: str) -> list[dict[str, Any]]:
+    if LIVE_LIMIT_EVENT_TYPE not in text or "rate_limits" not in text:
+        return []
+
+    events: list[dict[str, Any]] = []
+    marker_start = 0
+    while True:
+        marker_index = text.find(LIVE_LIMIT_EVENT_TYPE, marker_start)
+        if marker_index == -1:
+            break
+
+        search_floor = max(0, marker_index - 12000)
+        start = text.rfind("{", search_floor, marker_index)
+        attempts = 0
+        while start != -1 and attempts < 48:
+            attempts += 1
+            candidate = extract_balanced_json_object(text, start)
+            if candidate and marker_index < start + len(candidate) and "rate_limits" in candidate:
+                try:
+                    decoded = json.loads(candidate)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, dict) and decoded.get("type") == LIVE_LIMIT_EVENT_TYPE:
+                    events.append(decoded)
+                    break
+            start = text.rfind("{", search_floor, start)
+
+        marker_start = marker_index + len(LIVE_LIMIT_EVENT_TYPE)
+
+    return events
+
+
+def live_snapshot_from_limit(prefix: str, payload: dict[str, Any], ts: float) -> LimitSnapshot | None:
+    used = number_or_none(payload.get("used_percent"))
+    if used is None:
+        return None
+
+    window = int_or_none(payload.get("window_minutes")) or DEFAULT_LIMIT_WINDOWS.get(prefix)
+    resets_at = number_or_none(payload.get("reset_at"))
+    if resets_at is None:
+        resets_at = number_or_none(payload.get("resets_at"))
+    if resets_at is None:
+        reset_after = number_or_none(payload.get("reset_after_seconds"))
+        if reset_after is not None:
+            resets_at = ts + reset_after
+
+    return LimitSnapshot(
+        ts=ts,
+        session_ts=0.0,
+        used_percent=used,
+        window_minutes=window,
+        resets_at=resets_at,
+        source="live-log",
+    )
+
+
+def collect_live_limit_snapshots(live_log_db: Path | None, now: datetime) -> tuple[dict[str, LimitSnapshot], dict[str, int]]:
+    stats = {"live_limit_rows": 0, "live_limit_events": 0, "live_limit_snapshots": 0}
+    if live_log_db is None or not live_log_db.exists():
+        return {}, stats
+
+    now_ts = now.timestamp()
+    snapshots: dict[str, LimitSnapshot] = {}
+
+    try:
+        connection = sqlite3.connect(f"file:{live_log_db}?mode=ro", uri=True, timeout=0.05)
+    except sqlite3.Error:
+        return {}, stats
+
+    try:
+        connection.execute("PRAGMA query_only = true")
+        rows = connection.execute(
+            """
+            SELECT ts, ts_nanos, target, feedback_log_body
+            FROM logs
+            WHERE ts >= ?
+              AND ts <= ?
+              AND target = ?
+              AND feedback_log_body IS NOT NULL
+              AND feedback_log_body LIKE ?
+            ORDER BY ts DESC, ts_nanos DESC, id DESC
+            LIMIT ?
+            """,
+            (
+                int(now_ts - LIVE_LIMIT_MAX_AGE_SECONDS),
+                int(now_ts + 60),
+                "codex_api::endpoint::responses_websocket",
+                f"%{LIVE_LIMIT_EVENT_TYPE}%",
+                LIVE_LIMIT_ROW_LIMIT,
+            ),
+        )
+
+        for ts, ts_nanos, _target, body in rows:
+            event_ts = float(ts) + (float(ts_nanos or 0) / 1_000_000_000)
+            if event_ts > now_ts + 60:
+                continue
+            if now_ts - event_ts > LIVE_LIMIT_MAX_AGE_SECONDS:
+                break
+            if not isinstance(body, str) or LIVE_LIMIT_EVENT_TYPE not in body:
+                continue
+
+            stats["live_limit_rows"] += 1
+            for event in iter_live_rate_limit_events(body):
+                rate_limits = event.get("rate_limits")
+                if not isinstance(rate_limits, dict):
+                    continue
+
+                stats["live_limit_events"] += 1
+                for prefix in ("primary", "secondary"):
+                    payload = rate_limits.get(prefix)
+                    if not isinstance(payload, dict):
+                        continue
+                    snapshot = live_snapshot_from_limit(prefix, payload, event_ts)
+                    if snapshot is None:
+                        continue
+                    existing = snapshots.get(prefix)
+                    if existing is None or snapshot.ts > existing.ts:
+                        snapshots[prefix] = snapshot
+
+            if "primary" in snapshots and "secondary" in snapshots:
+                break
+    except sqlite3.Error:
+        return {}, stats
+    finally:
+        connection.close()
+
+    stats["live_limit_snapshots"] = len(snapshots)
+    return snapshots, stats
+
+
+def resolve_codex_bin(value: str | None) -> str | None:
+    if value:
+        path = Path(value).expanduser()
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+
+    found = shutil.which("codex")
+    if found:
+        return found
+
+    common_path = Path.home() / ".npm-global" / "bin" / "codex"
+    if common_path.exists() and os.access(common_path, os.X_OK):
+        return str(common_path)
+
+    return None
+
+
+def account_window_snapshot(prefix: str, payload: dict[str, Any], observed_ts: float) -> LimitSnapshot | None:
+    used = number_or_none(payload.get("usedPercent"))
+    if used is None:
+        used = number_or_none(payload.get("used_percent"))
+    if used is None:
+        return None
+
+    window = int_or_none(payload.get("windowDurationMins"))
+    if window is None:
+        window = int_or_none(payload.get("window_minutes"))
+    if window is None:
+        window = DEFAULT_LIMIT_WINDOWS.get(prefix)
+
+    resets_at = number_or_none(payload.get("resetsAt"))
+    if resets_at is None:
+        resets_at = number_or_none(payload.get("resets_at"))
+
+    return LimitSnapshot(
+        ts=observed_ts,
+        session_ts=0.0,
+        used_percent=used,
+        window_minutes=window,
+        resets_at=resets_at,
+        source="codex-account",
+    )
+
+
+def account_snapshots_from_payload(payload: dict[str, Any], observed_ts: float) -> dict[str, LimitSnapshot]:
+    rate_limits = payload.get("rateLimits")
+    by_limit_id = payload.get("rateLimitsByLimitId")
+    if isinstance(by_limit_id, dict) and isinstance(by_limit_id.get("codex"), dict):
+        rate_limits = by_limit_id["codex"]
+    if not isinstance(rate_limits, dict):
+        return {}
+
+    snapshots: dict[str, LimitSnapshot] = {}
+    for prefix in ("primary", "secondary"):
+        window = rate_limits.get(prefix)
+        if not isinstance(window, dict):
+            continue
+        snapshot = account_window_snapshot(prefix, window, observed_ts)
+        if snapshot is not None:
+            snapshots[prefix] = snapshot
+    return snapshots
+
+
+def collect_account_limit_snapshots(
+    codex_bin: str | None,
+    now: datetime,
+    timeout_seconds: float = ACCOUNT_LIMIT_TIMEOUT_SECONDS,
+) -> tuple[dict[str, LimitSnapshot], dict[str, int]]:
+    stats = {"account_limit_requests": 0, "account_limit_snapshots": 0}
+    resolved = resolve_codex_bin(codex_bin)
+    if not resolved:
+        return {}, stats
+
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {"name": "codex-stats", "title": "Codex Stats", "version": "0.0.0"},
+            "capabilities": {
+                "experimentalApi": True,
+                "requestAttestation": False,
+                "optOutNotificationMethods": [],
+            },
+        },
+    }
+    read_limits = {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": None}
+
+    try:
+        proc = subprocess.Popen(
+            [resolved, "app-server", "--listen", "stdio://"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return {}, stats
+
+    snapshots: dict[str, LimitSnapshot] = {}
+    try:
+        if proc.stdin is None or proc.stdout is None:
+            return {}, stats
+
+        for message in (initialize, read_limits):
+            proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+        stats["account_limit_requests"] = 1
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            remaining = max(0.05, deadline - time.monotonic())
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            if not ready:
+                break
+
+            line = proc.stdout.readline()
+            if not line:
+                break
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if message.get("id") != 2 or not isinstance(message.get("result"), dict):
+                continue
+
+            snapshots = account_snapshots_from_payload(message["result"], now.timestamp())
+            stats["account_limit_snapshots"] = len(snapshots)
+            break
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    return snapshots, stats
+
+
 def start_of_month(value: datetime) -> datetime:
     return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -309,12 +625,13 @@ def reset_generation(snapshot: LimitSnapshot) -> int:
     return int(snapshot.resets_at // (snapshot.window_minutes * 60))
 
 
-def limit_sort_key(snapshot: LimitSnapshot) -> tuple[int, float, float, float]:
+def limit_sort_key(snapshot: LimitSnapshot) -> tuple[int, float, float, float, float]:
     used = snapshot.used_percent if snapshot.used_percent is not None else -1.0
     return (
         reset_generation(snapshot),
-        used,
         snapshot.ts,
+        snapshot.session_ts,
+        used,
         snapshot.resets_at or 0.0,
     )
 
@@ -355,30 +672,92 @@ def select_limit_snapshot(events: list[TokenEvent], prefix: str, now: datetime) 
     )
 
 
+def merge_live_limit_snapshot(
+    prefix: str,
+    jsonl_snapshot: LimitSnapshot | None,
+    live_snapshot: LimitSnapshot | None,
+    now: datetime,
+) -> LimitSnapshot | None:
+    if live_snapshot is None:
+        return jsonl_snapshot
+
+    now_ts = now.timestamp()
+    if live_snapshot.ts > now_ts + 60:
+        return jsonl_snapshot
+    if now_ts - live_snapshot.ts > LIVE_LIMIT_MAX_AGE_SECONDS:
+        return jsonl_snapshot
+    if jsonl_snapshot is not None and live_snapshot.ts + LIVE_LIMIT_NEWER_TOLERANCE_SECONDS < jsonl_snapshot.ts:
+        return jsonl_snapshot
+
+    window = live_snapshot.window_minutes
+    if window is None and jsonl_snapshot is not None:
+        window = jsonl_snapshot.window_minutes
+    if window is None:
+        window = DEFAULT_LIMIT_WINDOWS.get(prefix)
+
+    resets_at = live_snapshot.resets_at
+    if resets_at is None and jsonl_snapshot is not None:
+        resets_at = jsonl_snapshot.resets_at
+    resets_at = roll_reset_forward(resets_at, window, now_ts)
+
+    session_ts = jsonl_snapshot.session_ts if jsonl_snapshot is not None else live_snapshot.session_ts
+    return LimitSnapshot(
+        ts=live_snapshot.ts,
+        session_ts=session_ts,
+        used_percent=live_snapshot.used_percent,
+        window_minutes=window,
+        resets_at=resets_at,
+        source=live_snapshot.source,
+    )
+
+
 def limit_payload(snapshot: LimitSnapshot | None, local_tz: timezone) -> dict[str, Any]:
     if snapshot is None:
-        return {"label": "--", "remaining_percent": None, "used_percent": None, "resets_at": None}
+        return {
+            "label": "--",
+            "remaining_percent": None,
+            "used_percent": None,
+            "resets_at": None,
+            "observed_at": None,
+            "source": None,
+        }
 
     used = snapshot.used_percent
     window = snapshot.window_minutes
     resets_at = snapshot.resets_at
     if used is None:
-        return {"label": bucket_label_for_window(window), "remaining_percent": None, "used_percent": None, "resets_at": None}
+        return {
+            "label": bucket_label_for_window(window),
+            "remaining_percent": None,
+            "used_percent": None,
+            "resets_at": None,
+            "observed_at": None,
+            "source": snapshot.source,
+        }
 
     used = max(0.0, min(100.0, used))
     reset_iso = None
     if resets_at:
         reset_iso = datetime.fromtimestamp(resets_at, tz=local_tz).isoformat()
+    observed_iso = datetime.fromtimestamp(snapshot.ts, tz=local_tz).isoformat() if snapshot.ts else None
 
     return {
         "label": bucket_label_for_window(window),
         "remaining_percent": round(max(0.0, 100.0 - used), 1),
         "used_percent": round(used, 1),
         "resets_at": reset_iso,
+        "observed_at": observed_iso,
+        "source": snapshot.source,
     }
 
 
-def aggregate(events: list[TokenEvent], now: datetime, stats: dict[str, int], log_root: Path) -> dict[str, Any]:
+def aggregate(
+    events: list[TokenEvent],
+    now: datetime,
+    stats: dict[str, int],
+    log_root: Path,
+    live_limits: dict[str, LimitSnapshot] | None = None,
+) -> dict[str, Any]:
     local_tz = now.tzinfo or timezone.utc
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start_date = (now.date() - timedelta(days=6))
@@ -424,6 +803,12 @@ def aggregate(events: list[TokenEvent], now: datetime, stats: dict[str, int], lo
     elif stats["malformed_lines"]:
         message = f"Skipped {stats['malformed_lines']} malformed JSONL line(s)"
 
+    primary_snapshot = select_limit_snapshot(limit_events, "primary", now)
+    secondary_snapshot = select_limit_snapshot(limit_events, "secondary", now)
+    live_limits = live_limits or {}
+    primary_snapshot = merge_live_limit_snapshot("primary", primary_snapshot, live_limits.get("primary"), now)
+    secondary_snapshot = merge_live_limit_snapshot("secondary", secondary_snapshot, live_limits.get("secondary"), now)
+
     return {
         "generated_at": now.isoformat(),
         "status": {
@@ -432,14 +817,19 @@ def aggregate(events: list[TokenEvent], now: datetime, stats: dict[str, int], lo
             "files_scanned": stats["files_scanned"],
             "files_parsed": stats["files_parsed"],
             "malformed_lines": stats["malformed_lines"],
+            "live_limit_rows": stats.get("live_limit_rows", 0),
+            "live_limit_events": stats.get("live_limit_events", 0),
+            "live_limit_snapshots": stats.get("live_limit_snapshots", 0),
+            "account_limit_requests": stats.get("account_limit_requests", 0),
+            "account_limit_snapshots": stats.get("account_limit_snapshots", 0),
         },
         "today": {
             "total_tokens": sum(hourly),
             "hourly": hourly,
         },
         "limits": {
-            "primary": limit_payload(select_limit_snapshot(limit_events, "primary", now), local_tz),
-            "secondary": limit_payload(select_limit_snapshot(limit_events, "secondary", now), local_tz),
+            "primary": limit_payload(primary_snapshot, local_tz),
+            "secondary": limit_payload(secondary_snapshot, local_tz),
         },
         "history": {
             "week": [
@@ -462,16 +852,40 @@ def aggregate(events: list[TokenEvent], now: datetime, stats: dict[str, int], lo
     }
 
 
-def build_payload(log_root: Path, cache_file: Path, use_cache: bool, now: datetime) -> dict[str, Any]:
+def build_payload(
+    log_root: Path,
+    cache_file: Path,
+    use_cache: bool,
+    now: datetime,
+    live_log_db: Path | None = None,
+    use_account_limits: bool = False,
+    codex_bin: str | None = None,
+) -> dict[str, Any]:
     local_tz = now.tzinfo or timezone.utc
     events, stats = collect_events(log_root, cache_file, use_cache, local_tz)
-    return aggregate(events, now, stats, log_root)
+    live_limits, live_stats = collect_live_limit_snapshots(live_log_db, now)
+    stats.update(live_stats)
+    if use_account_limits:
+        account_limits, account_stats = collect_account_limit_snapshots(codex_bin, now)
+        stats.update(account_stats)
+        live_limits.update(account_limits)
+    return aggregate(events, now, stats, log_root, live_limits)
 
 
 def main() -> int:
     args = parse_args()
     now = parse_now(args.now)
-    payload = build_payload(Path(args.log_root).expanduser(), Path(args.cache_file).expanduser(), not args.no_cache, now)
+    live_log_db = None if args.no_live_limits else Path(args.live_log_db).expanduser()
+    use_account_limits = not args.no_live_limits and not args.no_account_limits
+    payload = build_payload(
+        Path(args.log_root).expanduser(),
+        Path(args.cache_file).expanduser(),
+        not args.no_cache,
+        now,
+        live_log_db,
+        use_account_limits,
+        args.codex_bin,
+    )
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return 0
 

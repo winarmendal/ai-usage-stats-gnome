@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "helper"))
@@ -55,6 +55,31 @@ class HelperTests(unittest.TestCase):
     def build(self, root: Path, cache_file: Path, now: str, use_cache: bool = True) -> dict:
         parsed_now = helper.parse_now(now)
         return helper.build_payload(root, cache_file, use_cache, parsed_now)
+
+    def write_live_db(self, path: Path, rows: list[tuple[float, str, str]]) -> None:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    ts_nanos INTEGER NOT NULL,
+                    target TEXT NOT NULL,
+                    feedback_log_body TEXT
+                )
+                """
+            )
+            for ts, target, body in rows:
+                seconds = int(ts)
+                nanos = int((ts - seconds) * 1_000_000_000)
+                connection.execute(
+                    "INSERT INTO logs (ts, ts_nanos, target, feedback_log_body) VALUES (?, ?, ?, ?)",
+                    (seconds, nanos, target, body),
+                )
+            connection.commit()
+        finally:
+            connection.close()
 
     def test_daily_hourly_and_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,7 +222,7 @@ class HelperTests(unittest.TestCase):
             self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 100.0)
             self.assertEqual(payload["limits"]["primary"]["resets_at"], "2026-05-29T16:15:45+07:00")
 
-    def test_higher_current_window_usage_wins_when_sessions_conflict(self) -> None:
+    def test_latest_current_window_usage_wins_when_sessions_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "sessions"
             root.mkdir()
@@ -209,7 +234,7 @@ class HelperTests(unittest.TestCase):
                     token_event(
                         "2026-05-29T11:31:37+07:00",
                         100,
-                        primary=1,
+                        primary=6,
                         primary_resets_at=1780046258,
                     ),
                 ],
@@ -220,7 +245,7 @@ class HelperTests(unittest.TestCase):
                     token_event(
                         "2026-05-29T11:31:56+07:00",
                         50,
-                        primary=6,
+                        primary=1,
                         primary_resets_at=1780046258,
                     ),
                 ],
@@ -228,7 +253,88 @@ class HelperTests(unittest.TestCase):
 
             payload = self.build(root, cache, "2026-05-29T11:32:00+07:00")
 
-            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 94.0)
+            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 99.0)
+
+    def test_live_rate_limit_metadata_overrides_stale_jsonl_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            cache = Path(tmp) / "cache.json"
+            live_db = Path(tmp) / "logs_2.sqlite"
+
+            primary_reset = int(helper.parse_now("2026-05-29T16:00:00+07:00").timestamp())
+            secondary_reset = int(helper.parse_now("2026-06-01T06:00:00+07:00").timestamp())
+            self.write_jsonl(
+                root / "one.jsonl",
+                [
+                    token_event(
+                        "2026-05-29T11:50:00+07:00",
+                        100,
+                        primary=5,
+                        secondary=20,
+                        primary_resets_at=primary_reset,
+                        secondary_resets_at=secondary_reset,
+                    ),
+                ],
+            )
+
+            live_event = {
+                "type": "codex.rate_limits",
+                "rate_limits": {
+                    "primary": {"used_percent": 12, "window_minutes": 300, "reset_at": primary_reset},
+                    "secondary": {"used_percent": 47, "window_minutes": 10080, "reset_at": secondary_reset},
+                },
+            }
+            ignored_text = '{"rate_limits":{"primary":{"used_percent":99}}}'
+            live_ts = helper.parse_now("2026-05-29T11:59:00+07:00").timestamp()
+            self.write_live_db(
+                live_db,
+                [
+                    (live_ts + 1, "codex_api::endpoint::responses_websocket", ignored_text),
+                    (
+                        live_ts,
+                        "codex_api::endpoint::responses_websocket",
+                        f"session_loop: parsed SSE event {json.dumps(live_event, separators=(',', ':'))}",
+                    ),
+                ],
+            )
+
+            payload = helper.build_payload(
+                root,
+                cache,
+                True,
+                helper.parse_now("2026-05-29T12:00:00+07:00"),
+                live_db,
+            )
+
+            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 88.0)
+            self.assertEqual(payload["limits"]["secondary"]["remaining_percent"], 53.0)
+            self.assertEqual(payload["limits"]["primary"]["source"], "live-log")
+            self.assertEqual(payload["status"]["live_limit_snapshots"], 2)
+
+    def test_account_rate_limits_use_codex_limit_id_payload(self) -> None:
+        observed = helper.parse_now("2026-05-29T12:00:00+07:00").timestamp()
+        payload = {
+            "rateLimits": {
+                "primary": {"usedPercent": 90, "windowDurationMins": 300, "resetsAt": 1780046258},
+                "secondary": {"usedPercent": 90, "windowDurationMins": 10080, "resetsAt": 1780646258},
+            },
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {"usedPercent": 17, "windowDurationMins": 300, "resetsAt": 1780046258},
+                    "secondary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1780646258},
+                },
+                "other": {
+                    "primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": 1780046258},
+                },
+            },
+        }
+
+        snapshots = helper.account_snapshots_from_payload(payload, observed)
+
+        self.assertEqual(snapshots["primary"].used_percent, 17)
+        self.assertEqual(snapshots["secondary"].used_percent, 3)
+        self.assertEqual(snapshots["primary"].source, "codex-account")
 
 
 if __name__ == "__main__":

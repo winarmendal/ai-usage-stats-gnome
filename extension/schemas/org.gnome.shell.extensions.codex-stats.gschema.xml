@@ -33,5 +33,10 @@
       <summary>Enable helper cache</summary>
       <description>Store parsed token_count metadata in the user cache directory for faster refreshes.</description>
     </key>
+    <key name="account-limits-enabled" type="b">
+      <default>true</default>
+      <summary>Use realtime Codex account limits</summary>
+      <description>Ask the local Codex CLI for the current account rate-limit snapshot when available.</description>
+    </key>
   </schema>
 </schemalist>

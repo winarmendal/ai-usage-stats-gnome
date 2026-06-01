@@ -11,6 +11,7 @@ const VIEWS = ['day', 'week', 'month', 'three_months'];
 const BAR_WIDTH = 170;
 const MAX_SERIES_HEIGHT = 330;
 const SERIES_ROW_HEIGHT = 22;
+const MANUAL_REFRESH_DELAYS_SECONDS = [2, 5, 10];
 const INTERFACE_SCHEMA = 'org.gnome.desktop.interface';
 const USER_THEME_SCHEMA = 'org.gnome.shell.extensions.user-theme';
 const PANEL_ICON_DARK_THEME_PATHS = [
@@ -36,7 +37,8 @@ export default class CodexStatsExtension extends Extension {
         this._signals = [];
         this._themeSignals = [];
         this._timeoutId = null;
-        this._followupRefreshId = null;
+        this._followupRefreshIds = [];
+        this._refreshSerial = 0;
         this._activeView = 'day';
         this._statsExpanded = false;
         this._data = null;
@@ -68,7 +70,7 @@ export default class CodexStatsExtension extends Extension {
         this._buildMenu();
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-        for (const key of ['refresh-interval', 'log-root', 'panel-show-usage', 'cache-enabled'])
+        for (const key of ['refresh-interval', 'log-root', 'panel-show-usage', 'cache-enabled', 'account-limits-enabled'])
             this._signals.push(this._settings.connect(`changed::${key}`, () => this._onSettingsChanged()));
         this._connectThemeSignal(this._interfaceSettings, 'changed::color-scheme');
         this._connectThemeSignal(this._interfaceSettings, 'changed::gtk-theme');
@@ -85,10 +87,7 @@ export default class CodexStatsExtension extends Extension {
             GLib.source_remove(this._timeoutId);
             this._timeoutId = null;
         }
-        if (this._followupRefreshId) {
-            GLib.source_remove(this._followupRefreshId);
-            this._followupRefreshId = null;
-        }
+        this._clearFollowupRefreshes();
 
         if (this._settings) {
             for (const id of this._signals)
@@ -239,14 +238,22 @@ export default class CodexStatsExtension extends Extension {
         if (this._loading && !force)
             return;
 
+        if (force && !followup)
+            this._clearFollowupRefreshes();
+
+        const serial = ++this._refreshSerial;
         this._loading = true;
         this._subtitleLabel?.set_text(_('Refreshing...'));
         this._updatePanel();
 
         try {
             const payload = await this._runHelper();
+            if (serial !== this._refreshSerial)
+                return;
             this._data = payload;
         } catch (error) {
+            if (serial !== this._refreshSerial)
+                return;
             logError(error, 'Codex Stats: helper refresh failed');
             this._data = {
                 status: {
@@ -262,23 +269,33 @@ export default class CodexStatsExtension extends Extension {
                 history: {week: [], month: [], three_months: []},
             };
         } finally {
-            this._loading = false;
-            this._updatePanel();
-            this._updateMenu();
-            if (force && !followup)
-                this._scheduleFollowupRefresh();
+            if (serial === this._refreshSerial) {
+                this._loading = false;
+                this._updatePanel();
+                this._updateMenu();
+                if (force && !followup)
+                    this._scheduleFollowupRefreshes();
+            }
         }
     }
 
-    _scheduleFollowupRefresh() {
-        if (this._followupRefreshId)
-            GLib.source_remove(this._followupRefreshId);
+    _clearFollowupRefreshes() {
+        for (const id of this._followupRefreshIds || [])
+            GLib.source_remove(id);
+        this._followupRefreshIds = [];
+    }
 
-        this._followupRefreshId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
-            this._followupRefreshId = null;
-            this._refreshData(true, true);
-            return GLib.SOURCE_REMOVE;
-        });
+    _scheduleFollowupRefreshes() {
+        this._clearFollowupRefreshes();
+
+        for (const delay of MANUAL_REFRESH_DELAYS_SECONDS) {
+            const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, delay, () => {
+                this._followupRefreshIds = this._followupRefreshIds.filter(existingId => existingId !== id);
+                this._refreshData(true, true);
+                return GLib.SOURCE_REMOVE;
+            });
+            this._followupRefreshIds.push(id);
+        }
     }
 
     _runHelper() {
@@ -297,6 +314,8 @@ export default class CodexStatsExtension extends Extension {
             ];
             if (!this._settings.get_boolean('cache-enabled'))
                 argv.push('--no-cache');
+            if (!this._settings.get_boolean('account-limits-enabled'))
+                argv.push('--no-account-limits');
 
             const proc = Gio.Subprocess.new(
                 argv,
@@ -410,7 +429,7 @@ export default class CodexStatsExtension extends Extension {
         this._summaryBox.add_child(this._metricRow(
             data?.limits?.secondary?.label || _('Week'),
             this._formatPercent(data?.limits?.secondary?.remaining_percent),
-            this._resetText(data?.limits?.secondary?.resets_at)
+            this._resetText(data?.limits?.secondary?.resets_at, true)
         ));
 
         if (status.message)
@@ -662,14 +681,35 @@ export default class CodexStatsExtension extends Extension {
         return `${Math.round(Number(value))}%`;
     }
 
-    _resetText(value) {
+    _resetText(value, includeDate = false) {
         if (!value)
             return _('reset --');
-        return _('reset %s').format(this._formatTime(value));
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime()))
+            return _('reset --');
+
+        const showDate = includeDate || !this._sameLocalDate(date, new Date());
+        const resetAt = showDate
+            ? `${this._formatDate(date)} ${this._formatTime(date)}`
+            : this._formatTime(date);
+        return _('reset %s').format(resetAt);
+    }
+
+    _sameLocalDate(left, right) {
+        return left.getFullYear() === right.getFullYear() &&
+            left.getMonth() === right.getMonth() &&
+            left.getDate() === right.getDate();
+    }
+
+    _formatDate(value) {
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime()))
+            return '--';
+        return date.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'});
     }
 
     _formatTime(value) {
-        const date = new Date(value);
+        const date = value instanceof Date ? value : new Date(value);
         if (Number.isNaN(date.getTime()))
             return '--';
         return date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});

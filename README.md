@@ -4,7 +4,7 @@
 
 Codex Stats is a local-first GNOME Shell extension that shows Codex token usage in the top bar.
 
-It reads only `token_count` metadata events from local Codex JSONL session logs under `~/.codex/sessions`. It does not read prompts, assistant messages, file contents, browser data, cookies, API tokens, or network APIs.
+It reads `token_count` metadata events from local Codex JSONL session logs under `~/.codex/sessions`, uses local `codex.rate_limits` metadata from `~/.codex/logs_2.sqlite`, and can ask the local Codex CLI for the current account rate-limit snapshot for fresher 5-hour and weekly percentages. It does not display prompts, assistant messages, file contents, browser data, cookies, or API tokens.
 
 ## Features
 
@@ -13,9 +13,9 @@ It reads only `token_count` metadata events from local Codex JSONL session logs 
 - Theme-aware GNOME Shell styling for light and dark mode
 - Click popover with today, 5-hour remaining, and weekly remaining stats
 - Collapsed More Stats section with Day, Week, Month, and 3M token history views
-- Preferences for refresh interval, log root, compact panel usage, and cache usage
-- Python stdlib helper with cache-aware JSONL parsing
-- Local-only privacy model with no OpenAI or ChatGPT API calls
+- Preferences for refresh interval, log root, realtime account limits, compact panel usage, and cache usage
+- Python stdlib helper with cache-aware JSONL parsing and realtime rate-limit metadata
+- Privacy-focused model that displays only token and rate-limit metadata
 
 ## Requirements
 

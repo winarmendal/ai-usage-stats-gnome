@@ -2,7 +2,7 @@
 
 ## Summary
 
-Codex Stats is a local-first GNOME Shell extension that shows Codex token usage in the top bar. It reads local Codex JSONL session logs, aggregates token-count metadata, and presents daily, 5-hour, weekly, and historical usage without calling OpenAI, ChatGPT, or any network API.
+Codex Stats is a local-first GNOME Shell extension that shows Codex token usage in the top bar. It reads local Codex JSONL session logs, aggregates token-count metadata, optionally overlays live local rate-limit metadata, and can ask the local Codex CLI for realtime account rate-limit percentages.
 
 ## Product Behavior
 
@@ -10,10 +10,11 @@ Codex Stats is a local-first GNOME Shell extension that shows Codex token usage 
 - The panel icon is bundled with Codex Stats and must not depend on the Codex desktop app being installed.
 - Panel and popover styling should follow the active GNOME Shell theme and remain legible in light and dark mode.
 - Click popover shows today's token burn, 5-hour remaining usage, weekly remaining usage, reset times, refresh and preferences buttons, and a collapsed More Stats section.
+- Weekly reset text includes the weekday/date plus time; short-window reset text includes the date when it is not today.
 - Expanding More Stats reveals Day, Week, Month, and 3M history tabs.
 - Historical stats show hourly burn for today, daily burn for the last 7 local days, daily burn for the current local month, and monthly totals for the last 3 calendar months.
 - Missing logs or rate-limit data should show `--` and a concise status message instead of crashing.
-- Rate-limit display should ignore expired reset windows and prefer the highest used percentage in the current reset window when sessions append conflicting 5-hour or weekly limit metadata.
+- Rate-limit display should prefer the realtime Codex account snapshot when available, then fresh local `codex.rate_limits` metadata, then the newest valid JSONL rate-limit snapshot. Expired reset windows must not override current windows.
 
 ## Identity And Installation
 
@@ -26,18 +27,21 @@ Codex Stats is a local-first GNOME Shell extension that shows Codex token usage 
 
 ## Privacy And Data Source
 
-- Parse only `event_msg` / `token_count` metadata events from `~/.codex/sessions/**/*.jsonl`.
+- Parse only `event_msg` / `token_count` metadata events from `~/.codex/sessions/**/*.jsonl` for token burn and historical charts.
+- For more responsive 5-hour and weekly percentages, read only structured local `codex.rate_limits` events from `~/.codex/logs_2.sqlite` when present.
+- When realtime account limits are enabled, call the local `codex app-server --listen stdio://` process and request only `account/rateLimits/read`.
 - Sum `payload.info.last_token_usage.total_tokens`.
 - Select 5-hour and weekly rate-limit status independently. Expired `resets_at` snapshots must not override a current window; if no current snapshot exists, roll the expired window forward and show it as freshly reset.
-- Use only local logs as the source of truth.
-- Never display or parse prompt text, assistant text, file contents, cookies, API tokens, or browser data.
-- Do not call OpenAI, ChatGPT, or other network APIs in v1.
+- Use local logs as the token burn and history source of truth. Realtime account limits are only for current 5-hour and weekly percentage display.
+- Never display prompt text, assistant text, file contents, cookies, API tokens, or browser data. Live rate-limit parsing must accept only structured `codex.rate_limits` metadata and ignore free-form text.
+- Codex Stats does not call OpenAI, ChatGPT, or other network APIs directly. Realtime account limit mode delegates to the local Codex CLI and can be disabled in preferences.
 
 ## Implementation Requirements
 
 - Use GNOME Shell ES modules, `PanelMenu.Button`, `PopupMenu`, `St` widgets, and `Gio.Settings`.
 - Run the Python stdlib helper asynchronously from the extension with `GLib.Subprocess`.
 - Default refresh interval is 60 seconds.
+- Realtime account limit mode defaults to enabled, with local log fallback if the Codex CLI is unavailable or times out.
 - Helper cache path is `~/.cache/codex-stats/cache.json`.
 - Cache parsed file mtime, size, and bucket totals so normal refreshes only parse changed or new JSONL files.
 - Tolerate malformed or truncated JSONL lines and continue scanning.

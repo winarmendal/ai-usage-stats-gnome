@@ -16,7 +16,7 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
 
         const dataGroup = new Adw.PreferencesGroup({
             title: _('Data'),
-            description: _('Codex Stats reads local token_count metadata from Codex session logs.'),
+            description: _('Codex Stats reads local token_count and rate-limit metadata from Codex logs.'),
         });
         page.add(dataGroup);
 
@@ -35,6 +35,13 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
         });
         settings.bind('cache-enabled', cacheRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         dataGroup.add(cacheRow);
+
+        const accountLimitsRow = new Adw.SwitchRow({
+            title: _('Realtime account limits'),
+            subtitle: _('Uses the local Codex CLI to refresh 5h and weekly percentages when available.'),
+        });
+        settings.bind('account-limits-enabled', accountLimitsRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        dataGroup.add(accountLimitsRow);
 
         const refreshGroup = new Adw.PreferencesGroup({
             title: _('Refresh'),
@@ -74,7 +81,7 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
 
         const privacyRow = new Adw.ActionRow({
             title: _('Local metadata only'),
-            subtitle: _('No network calls. No prompt, response, file, cookie, or API token parsing.'),
+            subtitle: _('No prompt, response, file, cookie, or API token display.'),
         });
         privacyRow.add_prefix(new Gtk.Image({icon_name: 'changes-prevent-symbolic'}));
         privacyGroup.add(privacyRow);
