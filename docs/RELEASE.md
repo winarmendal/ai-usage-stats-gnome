@@ -34,12 +34,15 @@ For a source-checkout install:
 Then verify:
 
 - `codex-stats@winarmendal.github.io` can be enabled
-- top bar defaults to the bundled Codex Stats icon only
+- top bar shows the bundled provider icon (Codex by default; the Claude logomark when Claude is the active provider)
 - enabling compact panel usage shows 5h and Week percentages only
 - panel icon and popover remain legible in GNOME light and dark mode
 - More Stats expands and the popover tabs switch correctly
+- enabling "Track Claude Code" shows the Codex/Claude selector, and switching to Claude swaps both the panel icon and the stats
+- Claude 5h and Week show `--` until the statusLine capture wrapper is installed (Preferences → Claude → "Install")
+- with "Fetch live limits online" enabled, the Sonnet row populates and stays visible (only briefly showing `--`, never disappearing)
 - preferences open and persist
-- no prompt or response text appears in the UI
+- no prompt, response text, or OAuth token appears in the UI or logs
 
 ## Publish
 
