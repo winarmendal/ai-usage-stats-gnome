@@ -5,6 +5,6 @@
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.codex-stats",
   "gettext-domain": "codex-stats",
-  "url": "https://github.com/winarmendal/codex-stats-gnome",
+  "url": "https://github.com/winarmendal/ai-usage-stats-gnome",
   "version": 8
 }

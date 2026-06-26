@@ -614,7 +614,7 @@ def claude_online_http_fetch(token: str) -> tuple[str, Any]:
             "Authorization": f"Bearer {token}",
             "anthropic-beta": CLAUDE_ONLINE_BETA,
             "Content-Type": "application/json",
-            "User-Agent": "codex-stats-gnome",
+            "User-Agent": "ai-usage-stats-gnome",
         },
         method="GET",
     )

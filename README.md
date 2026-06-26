@@ -1,6 +1,6 @@
 # AI Usage Stats
 
-![CI](https://github.com/winarmendal/codex-stats-gnome/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/winarmendal/ai-usage-stats-gnome/actions/workflows/ci.yml/badge.svg)
 
 AI Usage Stats is a local-first GNOME Shell extension that shows Codex and Claude Code token usage and rate-limit percentages in the top bar.
 
@@ -50,8 +50,8 @@ AI Usage Stats is not listed on Extension Manager yet. Extension Manager visibil
 Source installs are intended for development and local testing:
 
 ```bash
-git clone https://github.com/winarmendal/codex-stats-gnome.git
-cd codex-stats-gnome
+git clone https://github.com/winarmendal/ai-usage-stats-gnome.git
+cd ai-usage-stats-gnome
 ./scripts/install.sh
 ```
 
