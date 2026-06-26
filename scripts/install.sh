@@ -58,7 +58,8 @@ cp "${ROOT_DIR}/extension/stylesheet.css" "${TARGET_DIR}/"
 cp "${ROOT_DIR}/extension/icons/"*.svg "${TARGET_DIR}/icons/"
 cp "${ROOT_DIR}/extension/schemas/org.gnome.shell.extensions.codex-stats.gschema.xml" "${TARGET_DIR}/schemas/"
 cp "${ROOT_DIR}/helper/codex_stats_helper.py" "${TARGET_DIR}/helper/"
-chmod +x "${TARGET_DIR}/helper/codex_stats_helper.py"
+cp "${ROOT_DIR}/helper/claude_statusline_capture.py" "${TARGET_DIR}/helper/"
+chmod +x "${TARGET_DIR}/helper/codex_stats_helper.py" "${TARGET_DIR}/helper/claude_statusline_capture.py"
 
 glib-compile-schemas "${TARGET_DIR}/schemas"
 

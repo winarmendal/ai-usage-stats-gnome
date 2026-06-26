@@ -38,5 +38,30 @@
       <summary>Use realtime Codex account limits</summary>
       <description>Ask the local Codex CLI for the current account rate-limit snapshot when available.</description>
     </key>
+    <key name="active-provider" type="s">
+      <default>'codex'</default>
+      <summary>Active usage provider</summary>
+      <description>Which provider's usage is shown in the panel and popover (codex or claude).</description>
+    </key>
+    <key name="claude-enabled" type="b">
+      <default>false</default>
+      <summary>Track Claude Code usage</summary>
+      <description>Show Claude Code as a selectable provider. Token usage is read locally; live 5h/weekly limits require the statusLine capture.</description>
+    </key>
+    <key name="claude-log-root" type="s">
+      <default>'~/.claude/projects'</default>
+      <summary>Claude sessions root</summary>
+      <description>Directory containing local Claude Code JSONL session transcripts.</description>
+    </key>
+    <key name="claude-limits-file" type="s">
+      <default>'~/.cache/codex-stats/claude-limits.json'</default>
+      <summary>Claude rate-limit capture file</summary>
+      <description>JSON file the statusLine capture writes with Claude 5h/weekly rate-limit metadata.</description>
+    </key>
+    <key name="claude-online-usage" type="b">
+      <default>false</default>
+      <summary>Fetch live Claude limits online</summary>
+      <description>Opt-in. When enabled, the helper makes a network request to the Anthropic usage API using your local Claude login token to read live 5h/weekly and per-model (Sonnet/Opus) limits. Off by default to keep the extension fully local. Only numeric usage metadata is read.</description>
+    </key>
   </schema>
 </schemalist>

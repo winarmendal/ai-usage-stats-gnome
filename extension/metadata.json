@@ -1,10 +1,10 @@
 {
   "uuid": "codex-stats@winarmendal.github.io",
-  "name": "Codex Stats",
-  "description": "Local-first Codex token usage and limit stats for the GNOME panel.",
+  "name": "AI Usage Stats",
+  "description": "Local-first Codex and Claude Code token usage and limit stats for the GNOME panel.",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.codex-stats",
   "gettext-domain": "codex-stats",
   "url": "https://github.com/winarmendal/codex-stats-gnome",
-  "version": 6
+  "version": 8
 }
