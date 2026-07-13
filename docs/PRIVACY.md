@@ -39,6 +39,16 @@ The helper reads local JSONL transcript files below the configured Claude log ro
 
 Claude JSONL transcripts contain prompt and response text. The helper reads **only** `assistant` events and from those reads only the `message.usage` numeric fields (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens) plus the deduplication identifiers `sessionId`, `requestId`, and `message.id`. Prompt text, assistant response text, file contents, tool call arguments, and all other fields are ignored and never stored.
 
+### Claude Cowork (agent mode)
+
+The helper also reads local Claude Cowork (agent-mode) usage ledgers under:
+
+```text
+~/.config/Claude/local-agent-mode-sessions
+```
+
+Only files named **`audit.jsonl`** are read — the canonical per-session usage ledger. From those it reads **only** the same numeric `message.usage` fields and deduplication identifiers as for Claude Code. That tree also nests full Claude Code transcripts (`local_*/.claude/projects/**/*.jsonl`) containing prompt and response text; those are **never opened** — the scan is name-scoped to `audit.jsonl`, not a recursive `*.jsonl` glob. Cowork token usage is folded into the Claude provider's totals so the displayed Claude figure reflects Claude Code + Cowork combined.
+
 For 5-hour and weekly rate-limit percentages, the helper reads the opt-in statusLine capture file, defaulting to:
 
 ```text
@@ -59,7 +69,7 @@ By default the extension makes no network calls. The optional **"Fetch live limi
 GET https://api.anthropic.com/api/oauth/usage
 ```
 
-This is the same endpoint Claude Code's own `/usage` view uses. It returns live 5-hour and weekly percentages plus per-model (Sonnet/Opus) weekly buckets that the offline statusLine source cannot provide.
+This is the same endpoint Claude Code's own `/usage` view uses. It returns live 5-hour and weekly percentages plus per-model (Fable/Opus) weekly buckets that the offline statusLine source cannot provide.
 
 - **Authentication.** The request is authenticated with your existing local Claude login token, read **read-only** from `~/.claude/.credentials.json` (the file Claude Code itself maintains). The helper never writes that file, never refreshes the token, and never logs, stores, or transmits the token anywhere except as the `Authorization` header of this one request to Anthropic. If the token is absent or expired, the helper skips the request and falls back to the local statusLine source.
 - **What is sent.** Only the bearer token and the fixed request above — no prompts, no token history, no machine identifiers.

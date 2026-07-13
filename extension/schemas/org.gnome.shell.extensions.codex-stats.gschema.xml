@@ -61,7 +61,7 @@
     <key name="claude-online-usage" type="b">
       <default>false</default>
       <summary>Fetch live Claude limits online</summary>
-      <description>Opt-in. When enabled, the helper makes a network request to the Anthropic usage API using your local Claude login token to read live 5h/weekly and per-model (Sonnet/Opus) limits. Off by default to keep the extension fully local. Only numeric usage metadata is read.</description>
+      <description>Opt-in. When enabled, the helper makes a network request to the Anthropic usage API using your local Claude login token to read live 5h/weekly and per-model (Fable/Opus) limits. Off by default to keep the extension fully local. Only numeric usage metadata is read.</description>
     </key>
   </schema>
 </schemalist>

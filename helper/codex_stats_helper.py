@@ -28,17 +28,21 @@ DEFAULT_LIMIT_WINDOWS = {"primary": 300, "secondary": 10080}
 DEFAULT_CLAUDE_LOG_ROOT = Path.home() / ".claude" / "projects"
 DEFAULT_CLAUDE_LIMITS_FILE = Path.home() / ".cache" / "codex-stats" / "claude-limits.json"
 DEFAULT_CLAUDE_HUD_CACHE_DIR = Path.home() / ".claude" / "hud" / "cache"
+DEFAULT_CLAUDE_COWORK_LOG_ROOT = Path.home() / ".config" / "Claude" / "local-agent-mode-sessions"
 CLAUDE_LIMIT_WINDOWS = {"primary": 300, "secondary": 10080}
 CLAUDE_LIMIT_KEYS = {"primary": "five_hour", "secondary": "seven_day"}
 CLAUDE_ONLINE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_ONLINE_BETA = "oauth-2025-04-20"
-CLAUDE_ONLINE_KEYS = {
-    "primary": "five_hour",
-    "secondary": "seven_day",
-    "sonnet_weekly": "seven_day_sonnet",
-    "opus_weekly": "seven_day_opus",
-}
-CLAUDE_ONLINE_WINDOWS = {"primary": 300, "secondary": 10080, "sonnet_weekly": 10080, "opus_weekly": 10080}
+# Account-wide 5h/weekly windows are top-level {utilization, resets_at} objects.
+CLAUDE_ONLINE_TOP_KEYS = {"primary": "five_hour", "secondary": "seven_day"}
+# Per-model weekly buckets are NOT top-level: the `seven_day_<model>` keys
+# (seven_day_opus / seven_day_sonnet / seven_day_omelette / ...) are now null/
+# legacy. The real per-model data lives in the response's `limits` array, each
+# `weekly` entry carrying scope.model.display_name. Map the API's human-readable
+# model name to our limit key. Verified live 2026-07-13: the Fable model appears
+# as a weekly `limits` entry with scope.model.display_name == "Fable".
+CLAUDE_ONLINE_SCOPED_MODELS = {"Fable": "fable_weekly", "Opus": "opus_weekly"}
+CLAUDE_ONLINE_WINDOWS = {"primary": 300, "secondary": 10080, "fable_weekly": 10080, "opus_weekly": 10080}
 CLAUDE_ONLINE_TTL_SECONDS = 60
 CLAUDE_ONLINE_BACKOFF_SECONDS = 300
 CLAUDE_ONLINE_ERROR_TTL_SECONDS = 45
@@ -82,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-root", default=None, help="session log directory (provider default when omitted)")
     parser.add_argument("--cache-file", default=None, help="cache JSON path (provider default when omitted)")
     parser.add_argument("--limits-file", default="", help="Claude statusLine rate-limit capture JSON path")
+    parser.add_argument("--cowork-log-root", default="", help="Claude Cowork agent-mode audit log root (default: ~/.config/Claude/local-agent-mode-sessions)")
     parser.add_argument("--claude-online", action="store_true", help="fetch live Claude limits from the Anthropic usage API (opt-in network call)")
     parser.add_argument("--claude-credentials-file", default="", help="Claude OAuth credentials path for --claude-online")
     parser.add_argument("--claude-online-cache", default="", help="throttle cache path for --claude-online")
@@ -120,10 +125,10 @@ def parse_now(value: str) -> datetime:
     return parsed
 
 
-def iter_log_files(log_root: Path) -> list[Path]:
+def iter_log_files(log_root: Path, pattern: str = "*.jsonl") -> list[Path]:
     if not log_root.exists():
         return []
-    return sorted(path for path in log_root.rglob("*.jsonl") if path.is_file())
+    return sorted(path for path in log_root.rglob(pattern) if path.is_file())
 
 
 def parse_session_timestamp(path: Path, local_tz: timezone) -> float:
@@ -307,18 +312,25 @@ def claude_usage_total(usage: dict[str, Any]) -> int:
 
 def claude_group_key(payload: dict[str, Any], message: dict[str, Any]) -> str | None:
     # One API response is written across several streaming/iteration rows that
-    # all share (sessionId, requestId). requestId is absent on a few rows, so
-    # fall back to message.id. The key is global across files so resumed/forked
-    # sessions (same sessionId+requestId in a second file) are not double-counted.
-    # Returns None when no identifier exists at all (never seen in real data); the
-    # caller then keeps such a row as its own event rather than merging distinct
-    # turns into an under-count.
+    # all share (sessionId/session_id, requestId/request_id). requestId is absent
+    # on a few rows, so fall back to message.id. Field names differ by source:
+    # Claude Code projects JSONL uses camelCase; Cowork agent-mode audit.jsonl uses
+    # snake_case. First-present lookups keep one extractor for both (the variants
+    # are disjoint per source). The key is global across files so resumed/forked
+    # sessions are not double-counted. Returns None when no identifier exists at
+    # all (never seen in real data); the caller then keeps such a row as its own
+    # event rather than merging distinct turns into an under-count.
     discriminator = payload.get("requestId")
+    if discriminator is None:
+        discriminator = payload.get("request_id")
     if discriminator is None:
         discriminator = message.get("id")
     if discriminator is None:
         return None
-    return f"{payload.get('sessionId')}\x00{discriminator}"
+    session = payload.get("sessionId")
+    if session is None:
+        session = payload.get("session_id")
+    return f"{session}\x00{discriminator}"
 
 
 def extract_claude_row(payload: dict[str, Any], local_tz: timezone) -> tuple[str, float, int] | None:
@@ -330,7 +342,10 @@ def extract_claude_row(payload: dict[str, Any], local_tz: timezone) -> tuple[str
     usage = message.get("usage")
     if not isinstance(usage, dict):
         return None
-    timestamp = parse_datetime(str(payload.get("timestamp", "")), local_tz)
+    # Claude Code uses `timestamp`; Cowork agent-mode audit.jsonl uses
+    # `_audit_timestamp` (no top-level `timestamp`). First-present handles both.
+    raw_ts = payload.get("timestamp") or payload.get("_audit_timestamp") or ""
+    timestamp = parse_datetime(str(raw_ts), local_tz)
     if timestamp is None:
         return None
     # Privacy: only the numeric usage fields and the dedup identifiers are read;
@@ -362,9 +377,23 @@ def parse_claude_file(path: Path, local_tz: timezone) -> tuple[list[list[Any]], 
     return rows, malformed
 
 
-def collect_claude_events(log_root: Path, cache_file: Path, use_cache: bool, local_tz: timezone) -> tuple[list[TokenEvent], dict[str, int]]:
+def collect_claude_events(
+    log_root: Path,
+    cache_file: Path,
+    use_cache: bool,
+    local_tz: timezone,
+    cowork_root: Path | None = None,
+) -> tuple[list[TokenEvent], dict[str, int]]:
     stats = {"files_scanned": 0, "files_parsed": 0, "malformed_lines": 0}
     files = iter_log_files(log_root)
+    if cowork_root is not None:
+        # Cowork agent-mode usage lives in files named exactly `audit.jsonl`. The
+        # same tree ALSO nests full Claude Code transcripts at
+        # local_*/.claude/projects/**/*.jsonl (camelCase, with prompt text) — a
+        # `*.jsonl` glob would count those too (~2.4x inflation) AND open transcript
+        # files. Name-scoping to `audit.jsonl` reads only the canonical per-session
+        # ledgers and never opens a transcript.
+        files = files + iter_log_files(cowork_root, "audit.jsonl")
     stats["files_scanned"] = len(files)
 
     cache = load_cache(cache_file) if use_cache else {"schema_version": SCHEMA_VERSION, "files": {}}
@@ -546,50 +575,79 @@ def read_claude_oauth_token(creds_file: Path) -> tuple[str, float | None] | None
     return token, number_or_none(creds.get("expiresAt"))
 
 
+def online_window_snapshot(window_payload: Any, window_minutes: int, ts: float, local_tz: timezone) -> LimitSnapshot | None:
+    # One {utilization, resets_at} window -> LimitSnapshot. resets_at may be ISO or
+    # epoch. A "not started" bucket ({utilization: 0, resets_at: null}) is treated
+    # as absent so an unused per-model gauge never shows a phantom 0%.
+    if not isinstance(window_payload, dict):
+        return None
+    used = number_or_none(window_payload.get("utilization"))
+    if used is None:
+        return None
+    resets_at = None
+    raw_reset = window_payload.get("resets_at")
+    if isinstance(raw_reset, str):
+        parsed = parse_datetime(raw_reset, local_tz)
+        if parsed is not None:
+            resets_at = parsed.timestamp()
+    else:
+        resets_at = number_or_none(raw_reset)
+    if resets_at is None and used == 0:
+        return None
+    return LimitSnapshot(
+        ts=ts,
+        session_ts=0.0,
+        used_percent=used,
+        window_minutes=window_minutes,
+        resets_at=resets_at,
+        source="online",
+    )
+
+
 def claude_online_snapshots_from_response(response: Any, ts: float, local_tz: timezone) -> dict[str, LimitSnapshot]:
-    # Maps the /api/oauth/usage response (five_hour / seven_day / seven_day_sonnet
-    # / seven_day_opus, each {utilization, resets_at: ISO-8601}) onto LimitSnapshots.
+    # Maps the /api/oauth/usage response onto LimitSnapshots. Account-wide 5h/weekly
+    # come from the top-level five_hour / seven_day windows; per-model weekly buckets
+    # come from the `limits` array, matched by scope.model.display_name.
     snapshots: dict[str, LimitSnapshot] = {}
     if not isinstance(response, dict):
         return snapshots
-    for prefix, key in CLAUDE_ONLINE_KEYS.items():
-        window_payload = response.get(key)
-        if not isinstance(window_payload, dict):
-            continue
-        used = number_or_none(window_payload.get("utilization"))
-        if used is None:
-            continue
-        resets_at = None
-        raw_reset = window_payload.get("resets_at")
-        if isinstance(raw_reset, str):
-            parsed = parse_datetime(raw_reset, local_tz)
-            if parsed is not None:
-                resets_at = parsed.timestamp()
-        else:
-            resets_at = number_or_none(raw_reset)
-        # "Not started" sentinel: {utilization: 0, resets_at: null} means the
-        # window is inactive — this is how the API hides unused per-model (Opus/
-        # Sonnet) buckets before first use. Treat it as absent (no phantom gauge).
-        if resets_at is None and used == 0:
-            continue
-        snapshots[prefix] = LimitSnapshot(
-            ts=ts,
-            session_ts=0.0,
-            used_percent=used,
-            window_minutes=CLAUDE_ONLINE_WINDOWS[prefix],
-            resets_at=resets_at,
-            source="online",
-        )
+
+    for prefix, key in CLAUDE_ONLINE_TOP_KEYS.items():
+        snapshot = online_window_snapshot(response.get(key), CLAUDE_ONLINE_WINDOWS[prefix], ts, local_tz)
+        if snapshot is not None:
+            snapshots[prefix] = snapshot
+
+    limits = response.get("limits")
+    if isinstance(limits, list):
+        for entry in limits:
+            if not isinstance(entry, dict) or entry.get("group") != "weekly":
+                continue
+            scope = entry.get("scope") if isinstance(entry.get("scope"), dict) else {}
+            model = scope.get("model") if isinstance(scope.get("model"), dict) else {}
+            our_key = CLAUDE_ONLINE_SCOPED_MODELS.get(model.get("display_name"))
+            if our_key is None or our_key in snapshots:
+                continue
+            snapshot = online_window_snapshot(
+                {"utilization": entry.get("percent"), "resets_at": entry.get("resets_at")},
+                CLAUDE_ONLINE_WINDOWS.get(our_key, 10080),
+                ts,
+                local_tz,
+            )
+            if snapshot is not None:
+                snapshots[our_key] = snapshot
+
     return snapshots
 
 
 def project_claude_online_response(response: Any) -> dict[str, Any]:
-    # Privacy whitelist: keep only the numeric usage windows we render, so the
-    # throttle cache on disk never holds anything but utilization + reset time.
+    # Privacy whitelist: keep only the numeric usage we render, so the throttle
+    # cache on disk holds nothing but utilization/percent + reset time (plus the
+    # model display name for per-model rows). No money, severity, or scope surface.
     projected: dict[str, Any] = {}
     if not isinstance(response, dict):
         return projected
-    for key in CLAUDE_ONLINE_KEYS.values():
+
+    for key in CLAUDE_ONLINE_TOP_KEYS.values():
         window_payload = response.get(key)
         if not isinstance(window_payload, dict):
             continue
@@ -602,6 +660,29 @@ def project_claude_online_response(response: Any) -> dict[str, Any]:
             entry["resets_at"] = raw_reset
         if entry:
             projected[key] = entry
+
+    scoped: list[dict[str, Any]] = []
+    limits = response.get("limits")
+    if isinstance(limits, list):
+        for item in limits:
+            if not isinstance(item, dict) or item.get("group") != "weekly":
+                continue
+            scope = item.get("scope") if isinstance(item.get("scope"), dict) else {}
+            model = scope.get("model") if isinstance(scope.get("model"), dict) else {}
+            display = model.get("display_name")
+            if display not in CLAUDE_ONLINE_SCOPED_MODELS:
+                continue
+            slim: dict[str, Any] = {"group": "weekly", "scope": {"model": {"display_name": display}}}
+            percent = number_or_none(item.get("percent"))
+            if percent is not None:
+                slim["percent"] = percent
+            raw_reset = item.get("resets_at")
+            if isinstance(raw_reset, (str, int, float)):
+                slim["resets_at"] = raw_reset
+            scoped.append(slim)
+    if scoped:
+        projected["limits"] = scoped
+
     return projected
 
 
@@ -1265,7 +1346,7 @@ def aggregate(
     }
     # Per-model weekly buckets only exist when the Claude online source supplies
     # them; absent keys are skipped so the Codex/offline contract is unchanged.
-    for extra_key in ("sonnet_weekly", "opus_weekly"):
+    for extra_key in ("fable_weekly", "opus_weekly"):
         extra_snapshot = merge_live_limit_snapshot(extra_key, None, live_limits.get(extra_key), now)
         if extra_snapshot is not None:
             limits[extra_key] = limit_payload(extra_snapshot, local_tz)
@@ -1344,8 +1425,9 @@ def claude_source(
     creds_file: Path | None = None,
     online_cache: Path | None = None,
     online_opener: Any = None,
+    cowork_root: Path | None = None,
 ) -> tuple[list[TokenEvent], dict[str, int], dict[str, LimitSnapshot]]:
-    events, stats = collect_claude_events(log_root, cache_file, use_cache, local_tz)
+    events, stats = collect_claude_events(log_root, cache_file, use_cache, local_tz, cowork_root=cowork_root)
     live_limits, limit_stats = collect_claude_limit_snapshots(limits_file, now)
     stats.update(limit_stats)
     if online_enabled and creds_file is not None:
@@ -1353,7 +1435,7 @@ def claude_source(
         # The online cache is a rate-limit/throttle buffer, not the JSONL parse
         # cache that --no-cache controls: it serves the last-known live limits
         # across the endpoint's 429 backoff and avoids hammering Anthropic on
-        # every refresh. Without it the per-model "Sonnet" gauge blanks on every
+        # every refresh. Without it the per-model "Fable" gauge blanks on every
         # throttled fetch. So keep it on even when token-history caching is off.
         # It stores only numeric utilization + reset timestamps.
         online_limits, online_stats = collect_claude_online_snapshots(
@@ -1379,6 +1461,7 @@ def build_payload(
     claude_creds_file: Path | None = None,
     claude_online_cache: Path | None = None,
     claude_online_opener: Any = None,
+    cowork_root: Path | None = None,
 ) -> dict[str, Any]:
     local_tz = now.tzinfo or timezone.utc
     if provider == "claude":
@@ -1393,6 +1476,7 @@ def build_payload(
             creds_file=claude_creds_file,
             online_cache=claude_online_cache,
             online_opener=claude_online_opener,
+            cowork_root=cowork_root,
         )
     else:
         events, stats, live_limits = codex_source(
@@ -1430,6 +1514,11 @@ def main() -> int:
             if args.claude_online_cache
             else DEFAULT_CLAUDE_ONLINE_CACHE_FILE
         )
+        cowork_root = (
+            Path(args.cowork_log_root).expanduser()
+            if args.cowork_log_root
+            else DEFAULT_CLAUDE_COWORK_LOG_ROOT
+        )
         payload = build_payload(
             log_root,
             cache_file,
@@ -1440,6 +1529,7 @@ def main() -> int:
             claude_online=args.claude_online,
             claude_creds_file=creds_file,
             claude_online_cache=online_cache,
+            cowork_root=cowork_root,
         )
     else:
         live_log_db = None if args.no_live_limits else Path(args.live_log_db).expanduser()

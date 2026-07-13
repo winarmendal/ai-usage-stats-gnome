@@ -178,7 +178,7 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
 
         const onlineRow = new Adw.SwitchRow({
             title: _('Fetch live limits online'),
-            subtitle: _('Opt-in: makes a network request to the Anthropic usage API using your local Claude login. Adds live 5h/weekly plus per-model Sonnet/Opus limits, fresh even with no Claude session open. Only numeric usage is read; the token is never stored or sent elsewhere. Off keeps the extension fully local.'),
+            subtitle: _('Opt-in: makes a network request to the Anthropic usage API using your local Claude login. Adds live 5h/weekly plus per-model Fable/Opus limits, fresh even with no Claude session open. Only numeric usage is read; the token is never stored or sent elsewhere. Off keeps the extension fully local.'),
         });
         settings.bind('claude-online-usage', onlineRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         claudeGroup.add(onlineRow);
