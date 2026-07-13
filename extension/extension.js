@@ -463,18 +463,18 @@ export default class CodexStatsExtension extends Extension {
             this._resetText(data?.limits?.secondary?.resets_at, true)
         ));
 
-        // "Sonnet only" weekly bucket (Claude online source only). Rendered on every
+        // "Fable only" weekly bucket (Claude online source only). Rendered on every
         // refresh when online mode is on, so the row never flickers in/out; the value
         // shows "--" when the online source is momentarily unavailable (429/backoff/
         // cold start) instead of the whole row disappearing. Opus is intentionally not
         // shown — it is already counted in the All-models (Week) gauge, matching how
         // Claude web/desktop present per-model usage.
         if (this._activeProvider === 'claude' && this._settings.get_boolean('claude-online-usage')) {
-            const sonnet = data?.limits?.sonnet_weekly;
+            const fable = data?.limits?.fable_weekly;
             this._summaryBox.add_child(this._metricRow(
-                _('Sonnet'),
-                this._formatPercent(sonnet?.remaining_percent),
-                this._resetText(sonnet?.resets_at, true)
+                _('Fable'),
+                this._formatPercent(fable?.remaining_percent),
+                this._resetText(fable?.resets_at, true)
             ));
         }
 

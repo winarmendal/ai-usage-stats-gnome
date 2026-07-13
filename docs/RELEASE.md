@@ -40,7 +40,7 @@ Then verify:
 - More Stats expands and the popover tabs switch correctly
 - enabling "Track Claude Code" shows the Codex/Claude selector, and switching to Claude swaps both the panel icon and the stats
 - Claude 5h and Week show `--` until the statusLine capture wrapper is installed (Preferences → Claude → "Install")
-- with "Fetch live limits online" enabled, the Sonnet row populates and stays visible (only briefly showing `--`, never disappearing)
+- with "Fetch live limits online" enabled, the Fable row populates and stays visible (only briefly showing `--`, never disappearing)
 - preferences open and persist
 - no prompt, response text, or OAuth token appears in the UI or logs
 

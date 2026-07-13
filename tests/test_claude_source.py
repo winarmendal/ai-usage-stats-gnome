@@ -58,24 +58,41 @@ def rate_limits(five: float = 11.0, seven: float = 31.0) -> dict:
     }
 
 
+def scoped_weekly(model: str, percent: float, resets_at: str | None = "2026-06-28T03:00:00.074Z") -> dict:
+    # One per-model weekly entry as it appears in the API's `limits` array.
+    return {
+        "kind": "weekly_scoped",
+        "group": "weekly",
+        "percent": percent,
+        "severity": "normal",
+        "resets_at": resets_at,
+        "scope": {"model": {"id": None, "display_name": model}, "surface": None},
+        "is_active": False,
+    }
+
+
 def online_response(
     five: float = 20.0,
     seven: float = 36.0,
-    sonnet: float | None = 4.0,
+    fable: float | None = 4.0,
     opus: float | None = None,
     extra: dict | None = None,
 ) -> dict:
-    # Shape of GET https://api.anthropic.com/api/oauth/usage (utilization 0-100,
-    # resets_at as ISO-8601). seven_day_sonnet / seven_day_opus are the per-model
-    # weekly buckets claude.ai surfaces as "Sonnet only".
+    # Shape of GET https://api.anthropic.com/api/oauth/usage: top-level five_hour /
+    # seven_day windows ({utilization, resets_at ISO-8601}), plus a `limits` array
+    # whose `weekly` entries carry scope.model.display_name. The per-model buckets
+    # (Fable / Opus) live in `limits`, not as top-level seven_day_<model> keys.
     resp: dict = {
         "five_hour": {"utilization": five, "resets_at": "2026-06-25T23:49:59.074Z"},
         "seven_day": {"utilization": seven, "resets_at": "2026-06-28T02:59:59.074Z"},
     }
-    if sonnet is not None:
-        resp["seven_day_sonnet"] = {"utilization": sonnet, "resets_at": "2026-06-28T03:00:00.074Z"}
+    limits: list = []
+    if fable is not None:
+        limits.append(scoped_weekly("Fable", fable))
     if opus is not None:
-        resp["seven_day_opus"] = {"utilization": opus, "resets_at": "2026-06-28T03:00:00.074Z"}
+        limits.append(scoped_weekly("Opus", opus))
+    if limits:
+        resp["limits"] = limits
     if extra:
         resp.update(extra)
     return resp
@@ -373,8 +390,8 @@ class ClaudeOnlineTests(unittest.TestCase):
         self.assertEqual(snaps["primary"].window_minutes, 300)
         self.assertEqual(snaps["primary"].used_percent, 20.0)
         self.assertEqual(snaps["secondary"].window_minutes, 10080)
-        self.assertEqual(snaps["sonnet_weekly"].window_minutes, 10080)
-        self.assertEqual(snaps["sonnet_weekly"].used_percent, 4.0)
+        self.assertEqual(snaps["fable_weekly"].window_minutes, 10080)
+        self.assertEqual(snaps["fable_weekly"].used_percent, 4.0)
         self.assertEqual(snaps["opus_weekly"].used_percent, 2.0)
         self.assertEqual(snaps["primary"].source, "online")
         # ISO reset string parsed to a real epoch (23:49:59.074Z).
@@ -382,15 +399,17 @@ class ClaudeOnlineTests(unittest.TestCase):
 
     def test_online_not_started_sentinel_is_absent(self) -> None:
         now = helper.parse_now("2026-06-26T04:00:00+07:00")
+        # A per-model weekly entry present as {percent: 0, resets_at: null} is the
+        # "not started" sentinel -> treated as absent (no phantom gauge).
         resp = online_response(opus=None)
-        # API hides an unused per-model bucket as {utilization: 0, resets_at: null}.
-        resp["seven_day_opus"] = {"utilization": 0, "resets_at": None}
+        resp.setdefault("limits", []).append(scoped_weekly("Opus", 0, resets_at=None))
         snaps = helper.claude_online_snapshots_from_response(resp, now.timestamp(), now.tzinfo)
         self.assertNotIn("opus_weekly", snaps)
-        self.assertIn("sonnet_weekly", snaps)
+        self.assertIn("fable_weekly", snaps)
         # But a genuine 0% with a real reset window is kept (just-reset, not hidden).
-        resp["seven_day_opus"] = {"utilization": 0, "resets_at": "2026-06-28T03:00:00.074Z"}
-        snaps2 = helper.claude_online_snapshots_from_response(resp, now.timestamp(), now.tzinfo)
+        resp2 = online_response(opus=None)
+        resp2.setdefault("limits", []).append(scoped_weekly("Opus", 0, resets_at="2026-06-28T03:00:00.074Z"))
+        snaps2 = helper.claude_online_snapshots_from_response(resp2, now.timestamp(), now.tzinfo)
         self.assertIn("opus_weekly", snaps2)
         self.assertEqual(snaps2["opus_weekly"].used_percent, 0.0)
 
@@ -409,8 +428,8 @@ class ClaudeOnlineTests(unittest.TestCase):
             self.assertEqual(lim["primary"]["source"], "online")
             self.assertEqual(lim["primary"]["label"], "5h")
             self.assertEqual(lim["secondary"]["used_percent"], 36.0)
-            self.assertEqual(lim["sonnet_weekly"]["used_percent"], 4.0)
-            self.assertEqual(lim["sonnet_weekly"]["source"], "online")
+            self.assertEqual(lim["fable_weekly"]["used_percent"], 4.0)
+            self.assertEqual(lim["fable_weekly"]["source"], "online")
             self.assertEqual(lim["opus_weekly"]["used_percent"], 2.0)
             self.assertEqual(opener.calls, 1)
             self.assertEqual(payload["status"]["claude_online_status"], "ok")
@@ -447,7 +466,7 @@ class ClaudeOnlineTests(unittest.TestCase):
                 root, cache, True, helper.parse_now(now), provider="claude",
                 claude_online=False, claude_creds_file=creds, claude_online_opener=_raise_opener,
             )
-            self.assertNotIn("sonnet_weekly", payload["limits"])
+            self.assertNotIn("fable_weekly", payload["limits"])
             self.assertEqual(payload["status"]["claude_online_requests"], 0)
 
     def test_online_token_expired_skips_fetch(self) -> None:

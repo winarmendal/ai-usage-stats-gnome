@@ -2,21 +2,22 @@
 
 ![CI](https://github.com/winarmendal/ai-usage-stats-gnome/actions/workflows/ci.yml/badge.svg)
 
-AI Usage Stats is a local-first GNOME Shell extension that shows Codex and Claude Code token usage and rate-limit percentages in the top bar.
+AI Usage Stats is a local-first GNOME Shell extension that shows Codex and Claude (Claude Code + Claude Cowork) token usage and rate-limit percentages in the top bar.
 
-For Codex it reads `token_count` metadata events from local JSONL session logs under `~/.codex/sessions`, uses local `codex.rate_limits` metadata from `~/.codex/logs_2.sqlite`, and can ask the local Codex CLI for the current account rate-limit snapshot for fresher 5-hour and weekly percentages. For Claude it reads `assistant` events from local JSONL transcripts under `~/.claude/projects` and uses an opt-in statusLine capture wrapper for 5-hour and weekly rate-limit percentages. An optional, off-by-default online mode can additionally read live 5-hour/weekly and per-model (Sonnet/Opus) limits directly from your own Anthropic account. Neither provider's prompts, assistant messages, file contents, browser data, or cookies are parsed or displayed; the opt-in online mode reads your local Claude login token read-only, solely to authenticate that one request (see `docs/PRIVACY.md`).
+For Codex it reads `token_count` metadata events from local JSONL session logs under `~/.codex/sessions`, uses local `codex.rate_limits` metadata from `~/.codex/logs_2.sqlite`, and can ask the local Codex CLI for the current account rate-limit snapshot for fresher 5-hour and weekly percentages. For Claude it reads `assistant` events from local JSONL transcripts under `~/.claude/projects`, folds in **Claude Cowork** (agent-mode) usage from `~/.config/Claude/local-agent-mode-sessions/**/audit.jsonl` so the Claude figure reflects Claude Code + Cowork combined, and uses an opt-in statusLine capture wrapper for 5-hour and weekly rate-limit percentages. An optional, off-by-default online mode can additionally read live 5-hour/weekly and per-model (Fable/Opus) limits directly from your own Anthropic account. Neither provider's prompts, assistant messages, file contents, browser data, or cookies are parsed or displayed; the opt-in online mode reads your local Claude login token read-only, solely to authenticate that one request (see `docs/PRIVACY.md`).
 
 ## Features
 
 - Top-bar icon with active-provider label, optional compact usage: `5h 99%  Week 60%`
 - Provider selector (Codex / Claude) at the top of the popover when Claude tracking is enabled; choice persists across sessions
+- Claude usage includes **Claude Cowork** (agent mode): Cowork token counts fold into the Claude totals automatically (only `audit.jsonl` ledgers are read; nested transcripts are never opened)
 - Bundled panel icon, so CLI-only users do not need the Codex or Claude desktop app icon installed
 - Theme-aware GNOME Shell styling for light and dark mode
 - Click popover with today, 5-hour remaining, and weekly remaining stats for the active provider
 - Collapsed More Stats section with Day, Week, Month, and 3M token history views
 - Preferences for refresh interval, log roots, realtime account limits, compact panel usage, cache usage, and Claude provider toggle
 - Opt-in Claude statusLine capture wrapper (installed from Preferences → Claude → Install) that supplies 5-hour and weekly rate-limit data; Claude's gauges show `--` until it is installed
-- Optional online live limits (Preferences → Claude, off by default): fetches live 5-hour/weekly and per-model Sonnet/Opus limits from your Anthropic account, fresh even with no Claude session open; see `docs/PRIVACY.md`
+- Optional online live limits (Preferences → Claude, off by default): fetches live 5-hour/weekly and per-model Fable/Opus limits from your Anthropic account, fresh even with no Claude session open; see `docs/PRIVACY.md`
 - Python stdlib helper with cache-aware JSONL parsing and realtime rate-limit metadata
 - Privacy-focused model that displays only token and rate-limit metadata, for both providers
 

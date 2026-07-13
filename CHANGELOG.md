@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Added **Claude Cowork** (agent-mode) token usage to the Claude provider. Cowork token counts are now folded into the same Claude totals and history as Claude Code, so the Claude number reflects **Claude Code + Cowork combined** (Anthropic's Pro/Max limits are shared across both, so a Code-only figure under-reported real usage). Automatic whenever Claude tracking is enabled — no new setting.
+- Disclosed new local read location: `~/.config/Claude/local-agent-mode-sessions/**/audit.jsonl`. Only files named `audit.jsonl` are read (the canonical per-session usage ledger), and only numeric `message.usage` counts + dedup identifiers are parsed. The nested Claude Code transcripts under that tree are **never opened**, so no prompt/response text is read — consistent with the existing privacy model (`docs/PRIVACY.md`).
+- Chat usage (claude.ai / desktop chat) remains out of scope: it is not stored locally and no personal API exposes per-surface token counts; its consumption is already reflected in the account-wide 5-hour/weekly gauges when online mode is enabled.
+- Renamed the online per-model weekly row from **Sonnet** to **Fable**: the popover now shows a **Fable** row (`fable_weekly`), sourced from the usage API's `seven_day_omelette` bucket (the API's current codename for the Fable model — there is no `seven_day_fable`). The Opus bucket is unchanged (still not shown separately — already counted in the All-models weekly gauge).
+- Bumped extension metadata to version 9.
+
 ## 0.3.0
 
 - Renamed the extension to **AI Usage Stats** (display name only). The UUID `codex-stats@winarmendal.github.io` and GSettings schema id `org.gnome.shell.extensions.codex-stats` are unchanged, so existing installs upgrade with no settings loss and no reinstall.
