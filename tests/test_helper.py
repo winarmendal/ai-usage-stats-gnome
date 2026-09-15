@@ -170,6 +170,28 @@ class HelperTests(unittest.TestCase):
             self.assertEqual(second["today"]["total_tokens"], 175)
             self.assertGreaterEqual(second["status"]["files_parsed"], 1)
 
+    def test_deleted_session_keeps_contributing_from_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            cache = Path(tmp) / "cache.json"
+            old = root / "old.jsonl"
+            self.write_jsonl(old, [token_event("2026-05-01T10:00:00+07:00", 1000)])
+            self.write_jsonl(root / "new.jsonl", [token_event("2026-05-28T10:00:00+07:00", 100)])
+
+            first = self.build(root, cache, "2026-05-28T12:00:00+07:00")
+            self.assertEqual(first["history"]["three_months"][-1]["total_tokens"], 1100)
+
+            old.unlink()
+            second = self.build(root, cache, "2026-05-28T12:00:00+07:00")
+            self.assertEqual(second["history"]["three_months"][-1]["total_tokens"], 1100)
+            self.assertEqual(second["status"]["files_retained"], 1)
+            self.assertTrue(json.loads(cache.read_text())["files"][str(old)]["missing"])
+
+            # --no-cache never resurrects anything.
+            third = self.build(root, cache, "2026-05-28T12:00:00+07:00", use_cache=False)
+            self.assertEqual(third["history"]["three_months"][-1]["total_tokens"], 100)
+
     def test_expired_rate_limit_does_not_override_current_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "sessions"
@@ -311,6 +333,72 @@ class HelperTests(unittest.TestCase):
             self.assertEqual(payload["limits"]["secondary"]["remaining_percent"], 53.0)
             self.assertEqual(payload["limits"]["primary"]["source"], "live-log")
             self.assertEqual(payload["status"]["live_limit_snapshots"], 2)
+
+    def test_weekly_only_telemetry_preserves_older_legacy_slot_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            cache = Path(tmp) / "cache.json"
+            live_db = Path(tmp) / "logs_2.sqlite"
+
+            legacy_observed_at = "2026-05-29T10:00:00+07:00"
+            expired_reset = int(helper.parse_now("2026-05-29T11:00:00+07:00").timestamp())
+            self.write_jsonl(
+                root / "legacy.jsonl",
+                [
+                    token_event(
+                        legacy_observed_at,
+                        100,
+                        primary=20,
+                        secondary=40,
+                        primary_resets_at=expired_reset,
+                        secondary_resets_at=expired_reset,
+                    ),
+                ],
+            )
+
+            weekly_observed_at = "2026-05-29T11:59:00+07:00"
+            weekly_reset = int(helper.parse_now("2026-06-05T12:00:00+07:00").timestamp())
+            live_event = {
+                "type": "codex.rate_limits",
+                "rate_limits": {
+                    "primary": {
+                        "used_percent": 47,
+                        "window_minutes": 10080,
+                        "reset_at": weekly_reset,
+                    },
+                },
+            }
+            self.write_live_db(
+                live_db,
+                [
+                    (
+                        helper.parse_now(weekly_observed_at).timestamp(),
+                        "codex_api::endpoint::responses_websocket",
+                        f"session_loop: parsed SSE event {json.dumps(live_event, separators=(',', ':'))}",
+                    ),
+                ],
+            )
+
+            payload = helper.build_payload(
+                root,
+                cache,
+                True,
+                helper.parse_now("2026-05-29T12:00:00+07:00"),
+                live_db,
+            )
+
+            self.assertEqual(set(payload["limits"]), {"primary", "secondary"})
+            self.assertEqual(payload["limits"]["primary"]["label"], "Week")
+            self.assertEqual(payload["limits"]["primary"]["remaining_percent"], 53.0)
+            self.assertEqual(payload["limits"]["primary"]["observed_at"], weekly_observed_at)
+            self.assertEqual(payload["limits"]["secondary"]["label"], "Week")
+            self.assertEqual(payload["limits"]["secondary"]["remaining_percent"], 100.0)
+            self.assertEqual(payload["limits"]["secondary"]["observed_at"], legacy_observed_at)
+            self.assertNotEqual(
+                payload["limits"]["primary"]["observed_at"],
+                payload["limits"]["secondary"]["observed_at"],
+            )
 
     def test_account_rate_limits_use_codex_limit_id_payload(self) -> None:
         observed = helper.parse_now("2026-05-29T12:00:00+07:00").timestamp()

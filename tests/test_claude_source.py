@@ -294,6 +294,37 @@ class ClaudeSourceTests(unittest.TestCase):
             self.assertNotIn(secret, cache.read_text())
             self.assertEqual(payload["today"]["total_tokens"], 100)
 
+    def test_deleted_transcript_keeps_contributing_from_cache(self) -> None:
+        # Claude Code prunes transcripts after `cleanupPeriodDays` (30 by default).
+        # History must not shrink when a file disappears: the cache is a ledger.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"
+            cache = Path(tmp) / "cache-claude.json"
+            old = root / "old.jsonl"
+            self.write_jsonl(old, [claude_row("2026-06-01T10:00:00+07:00", 1000, request_id="r-old")])
+            self.write_jsonl(root / "new.jsonl", [claude_row("2026-06-25T10:00:00+07:00", 100, request_id="r-new")])
+
+            first = self.build(root, cache, "2026-06-25T12:00:00+07:00")
+            self.assertEqual(first["history"]["three_months"][-1]["total_tokens"], 1100)
+            self.assertEqual(first["status"]["files_retained"], 0)
+
+            old.unlink()
+            second = self.build(root, cache, "2026-06-25T12:00:00+07:00")
+            self.assertEqual(second["history"]["three_months"][-1]["total_tokens"], 1100)
+            self.assertEqual(second["status"]["files_scanned"], 1)
+            self.assertEqual(second["status"]["files_retained"], 1)
+            entry = json.loads(cache.read_text())["files"][str(old)]
+            self.assertTrue(entry["missing"])
+
+            # Retained across further runs, and the flag clears if the file returns.
+            third = self.build(root, cache, "2026-06-25T12:00:00+07:00")
+            self.assertEqual(third["history"]["three_months"][-1]["total_tokens"], 1100)
+            self.write_jsonl(old, [claude_row("2026-06-01T10:00:00+07:00", 1000, request_id="r-old")])
+            fourth = self.build(root, cache, "2026-06-25T12:00:00+07:00")
+            self.assertEqual(fourth["history"]["three_months"][-1]["total_tokens"], 1100)
+            self.assertEqual(fourth["status"]["files_retained"], 0)
+            self.assertNotIn("missing", json.loads(cache.read_text())["files"][str(old)])
+
     def test_per_provider_cache_files_do_not_evict(self) -> None:
         # Separate cache files mean a codex run never evicts the claude cache.
         with tempfile.TemporaryDirectory() as tmp:

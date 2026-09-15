@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Token history no longer shrinks when source files disappear. Claude Code deletes transcripts older than `cleanupPeriodDays` (30 days by default), which silently erased older days from the monthly totals. The per-provider cache now acts as a ledger: an entry whose JSONL file is gone is kept (flagged `missing`) and keeps contributing to history, for both Claude and Codex. If the file reappears unchanged the flag clears; if it changed it is re-parsed as usual. Only `--no-cache` and `uninstall.sh --purge-cache` drop retained history. Days already deleted before this release cannot be recovered.
+- Added `status.files_retained` to the helper JSON (count of retained entries whose file is no longer on disk).
+- Codex panel and popover now show only the freshest rate-limit window(s). When the Codex CLI reports weekly-only telemetry, the stale 5h value from an older observation is no longer shown alongside it.
+- Bumped extension metadata to version 10.
+
 ## 0.4.0
 
 - Added **Claude Cowork** (agent-mode) token usage to the Claude provider. Cowork token counts are now folded into the same Claude totals and history as Claude Code, so the Claude number reflects **Claude Code + Cowork combined** (Anthropic's Pro/Max limits are shared across both, so a Code-only figure under-reported real usage). Automatic whenever Claude tracking is enabled — no new setting.
