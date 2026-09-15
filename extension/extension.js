@@ -420,6 +420,29 @@ export default class CodexStatsExtension extends Extension {
             this._themeSignals.push([settings, settings.connect(signalName, () => this._updatePanelIcon())]);
     }
 
+    _codexLimits() {
+        const candidates = [
+            this._data?.limits?.primary,
+            this._data?.limits?.secondary,
+        ].filter(limit => typeof limit?.remaining_percent === 'number' &&
+            Number.isFinite(limit.remaining_percent));
+        const observed = candidates.map(limit => ({
+            limit,
+            time: typeof limit.observed_at === 'string' && limit.observed_at.trim()
+                ? Date.parse(limit.observed_at)
+                : Number.NaN,
+        }));
+        const parseable = observed.filter(candidate => Number.isFinite(candidate.time));
+
+        if (!parseable.length)
+            return candidates;
+
+        const newest = Math.max(...parseable.map(candidate => candidate.time));
+        return parseable
+            .filter(candidate => candidate.time === newest)
+            .map(candidate => candidate.limit);
+    }
+
     _updatePanel() {
         if (!this._panelLabel)
             return;
@@ -428,6 +451,14 @@ export default class CodexStatsExtension extends Extension {
         this._panelLabel.visible = showUsage;
         if (!showUsage)
             return;
+
+        if (this._activeProvider === 'codex') {
+            const limits = this._codexLimits();
+            this._panelLabel.set_text(limits
+                .map(limit => `${limit.label || ''} ${this._formatPercent(limit.remaining_percent)}`.trim())
+                .join('  '));
+            return;
+        }
 
         const primary = this._data?.limits?.primary || {};
         const secondary = this._data?.limits?.secondary || {};
@@ -452,16 +483,26 @@ export default class CodexStatsExtension extends Extension {
         this._subtitleLabel?.set_text(status.ok === false ? _('Needs attention') : _('Updated %s').format(generated));
 
         this._summaryBox.add_child(this._metricRow(_('Today'), this._formatTokens(data?.today?.total_tokens), _('tokens burned')));
-        this._summaryBox.add_child(this._metricRow(
-            data?.limits?.primary?.label || _('5h'),
-            this._formatPercent(data?.limits?.primary?.remaining_percent),
-            this._resetText(data?.limits?.primary?.resets_at)
-        ));
-        this._summaryBox.add_child(this._metricRow(
-            data?.limits?.secondary?.label || _('Week'),
-            this._formatPercent(data?.limits?.secondary?.remaining_percent),
-            this._resetText(data?.limits?.secondary?.resets_at, true)
-        ));
+        if (this._activeProvider === 'codex') {
+            for (const limit of this._codexLimits()) {
+                this._summaryBox.add_child(this._metricRow(
+                    limit.label || '',
+                    this._formatPercent(limit.remaining_percent),
+                    this._resetText(limit.resets_at, limit.label === 'Week')
+                ));
+            }
+        } else {
+            this._summaryBox.add_child(this._metricRow(
+                data?.limits?.primary?.label || _('5h'),
+                this._formatPercent(data?.limits?.primary?.remaining_percent),
+                this._resetText(data?.limits?.primary?.resets_at)
+            ));
+            this._summaryBox.add_child(this._metricRow(
+                data?.limits?.secondary?.label || _('Week'),
+                this._formatPercent(data?.limits?.secondary?.remaining_percent),
+                this._resetText(data?.limits?.secondary?.resets_at, true)
+            ));
+        }
 
         // "Fable only" weekly bucket (Claude online source only). Rendered on every
         // refresh when online mode is on, so the row never flickers in/out; the value
