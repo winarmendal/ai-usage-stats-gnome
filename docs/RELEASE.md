@@ -34,14 +34,16 @@ For a source-checkout install:
 Then verify:
 
 - `codex-stats@winarmendal.github.io` can be enabled
-- top bar shows the bundled provider icon (Codex by default; the Claude logomark when Claude is the active provider)
-- enabling compact panel usage shows 5h and Week percentages only
-- panel icon and popover remain legible in GNOME light and dark mode
-- More Stats expands and the popover tabs switch correctly
-- enabling "Track Claude Code" shows the Codex/Claude selector, and switching to Claude swaps both the panel icon and the stats
+- top bar shows the placeholder "Select provider" until a provider is picked in Preferences → Providers → "Top bar provider"; picking Codex/Claude/Grok/OpenCode swaps both the panel icon and the label
+- enabling compact panel usage shows the top-bar provider's remaining percentages, or its token total (OpenCode) when it has no rate limits
+- panel icon and popover remain legible in GNOME light and dark mode, for all four provider icons
+- popover shows one block per enabled, present provider at once (no tabs); toggling a "Track <Provider>" switch off, or renaming its data root away, removes that block on the next refresh
+- More Stats expands to one 7-day history list per visible provider in a single scroll area
+- Grok's block shows a Week gauge only (5h reads `--`/is absent); OpenCode's block shows a token total with no gauges
 - Claude 5h and Week show `--` until the statusLine capture wrapper is installed (Preferences → Claude → "Install")
 - with "Fetch live limits online" enabled, the Fable row populates and stays visible (only briefly showing `--`, never disappearing)
-- preferences open and persist
+- `gnome-extensions disable` then `enable` (no re-login) leaves the popover showing real data: no per-provider "helper refresh cancelled" rows and no "Needs attention" subtitle
+- preferences open and persist, including the new Grok and OpenCode data-directory fields
 - no prompt, response text, or OAuth token appears in the UI or logs
 
 ## Publish

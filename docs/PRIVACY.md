@@ -1,6 +1,6 @@
 # Privacy
 
-AI Usage Stats is intentionally local-first. The same privacy guarantees apply to both the Codex and Claude providers. The only time it touches the network is the explicitly opt-in **"Fetch live limits online"** switch for Claude (off by default), documented under [Online Live Limits](#online-live-limits-opt-in).
+AI Usage Stats is intentionally local-first. The same privacy guarantees apply to every provider: Codex, Claude, Grok Build, and OpenCode. The only time it touches the network is the explicitly opt-in **"Fetch live limits online"** switch for Claude (off by default), documented under [Online Live Limits](#online-live-limits-opt-in).
 
 ## What It Reads — Codex
 
@@ -57,6 +57,34 @@ For 5-hour and weekly rate-limit percentages, the helper reads the opt-in status
 
 This file is written exclusively by the statusLine capture wrapper (see below) and contains only numeric `rate_limits`, `cost`, and `context_window` fields plus a `captured_at` timestamp.
 
+## What It Reads — Grok
+
+The helper reads local files below the configured Grok home directory, defaulting to:
+
+```text
+~/.grok
+```
+
+Token counts come from `sessions/<urlencoded-cwd>/<session-id>/usage.json`. The helper reads **only** the file's `turns` array and, from each turn, only `endedAt` (a timestamp) and `totalTokens`. The file's `session` totals are never read — resuming or forking a session copies the parent's history into them, which would double count. Every other file in the session directory (for example `chat_history.jsonl`, `updates.jsonl`, `system_prompt.txt`, and the `terminal/` folder) can contain prompt and tool-output text and is never opened. The scan is name-scoped to `usage.json`.
+
+The weekly credit percentage comes from the tail (last 1 MiB) of:
+
+```text
+~/.grok/logs/unified.jsonl
+```
+
+This file grows without bound, so only its tail is read, and only lines containing the exact marker `billing: fetched credits config` are decoded at all. From a matching line the helper reads only `msg`, `ts`, `ctx.config.creditUsagePercent`, and `ctx.config.currentPeriod.end`. Nothing from this log is cached. Grok Build publishes no 5-hour window, so the 5h gauge always shows `--` for this provider; only the weekly ("Week") gauge is populated.
+
+## What It Reads — OpenCode
+
+The helper reads the local OpenCode SQLite database below the configured OpenCode data directory, defaulting to:
+
+```text
+~/.local/share/opencode
+```
+
+It opens `opencode.db` or `opencode-prod.db` (whichever is newer) **read-only** — the helper never writes, migrates, or checkpoints this database. From the `message` and/or `session_message` tables it reads only rows whose role/type is `assistant`, and from each row's JSON blob only `role`, `tokens.input`, `tokens.output`, `tokens.reasoning`, `tokens.cache.read`, `tokens.cache.write`, and `time.created`. The `part` table, which holds message text, is **never queried**, and other blob fields such as `error.message` or `summary` are never read. OpenCode stores no rate-limit data locally, so this provider shows only a token total, with no rate-limit gauges.
+
 ## StatusLine Capture Wrapper
 
 `helper/claude_statusline_capture.py` is an opt-in component installed from Preferences → Claude → "Install". It intercepts the Claude Code statusLine payload and writes only whitelisted numeric fields to the capture file — rate limit percentages, cost, and context window size. It does not log, store, or forward any other content from the statusLine payload. The wrapper chains any pre-existing `statusLine` command byte-for-byte. Installation and uninstall edit `~/.claude/settings.json` atomically.
@@ -83,8 +111,8 @@ Leaving the switch off keeps the extension fully local-first with no network acc
 
 The extension and helper do not parse or display:
 
-- user prompts (Codex or Claude)
-- assistant responses (Codex or Claude)
+- user prompts (any provider)
+- assistant responses (any provider)
 - source files or tool call arguments
 - shell command output
 - browser data
@@ -94,7 +122,7 @@ The extension and helper do not parse or display:
 
 ## Network
 
-By default the extension and helper open no network sockets. Codex realtime account limit mode delegates to the local Codex CLI, which may refresh its own account rate-limit snapshot, and the Claude provider reads only local files. The single exception is the opt-in **"Fetch live limits online"** switch (off by default), which makes one authenticated HTTPS request to Anthropic's usage endpoint for the Claude provider — see [Online Live Limits](#online-live-limits-opt-in).
+By default the extension and helper open no network sockets. Codex realtime account limit mode delegates to the local Codex CLI, which may refresh its own account rate-limit snapshot, and the Claude, Grok, and OpenCode providers read only local files (or a local database, for OpenCode). The single exception is the opt-in **"Fetch live limits online"** switch (off by default), which makes one authenticated HTTPS request to Anthropic's usage endpoint for the Claude provider — see [Online Live Limits](#online-live-limits-opt-in).
 
 ## Cache
 
@@ -103,8 +131,10 @@ The optional per-provider cache files are stored at:
 ```text
 ~/.cache/codex-stats/cache-codex.json
 ~/.cache/codex-stats/cache-claude.json
+~/.cache/codex-stats/cache-grok.json
+~/.cache/codex-stats/cache-opencode.json
 ```
 
-They contain parsed token metadata and file scan metadata only — never prompt text, response text, or file contents.
+They contain parsed token metadata and file/database scan metadata only — never prompt text, response text, or file contents. `cache-opencode.json` in particular holds only a row id, a timestamp, and a token total per row — never the `data` blob it was extracted from.
 
 When the opt-in online mode is enabled, a throttle cache at `~/.cache/codex-stats/claude-online.json` additionally holds only the most recent numeric usage snapshot (utilization percentages and reset timestamps) and never any token or transcript content.
