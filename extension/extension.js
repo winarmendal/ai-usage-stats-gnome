@@ -7,37 +7,29 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
-const VIEWS = ['day', 'week', 'month', 'three_months'];
+import {PROVIDERS, PROVIDER_KEYS, expandHome} from './providers.js';
+
 const BAR_WIDTH = 170;
 const MAX_SERIES_HEIGHT = 330;
 const SERIES_ROW_HEIGHT = 22;
 const MANUAL_REFRESH_DELAYS_SECONDS = [2, 5, 10];
 const INTERFACE_SCHEMA = 'org.gnome.desktop.interface';
 const USER_THEME_SCHEMA = 'org.gnome.shell.extensions.user-theme';
-// Per-provider panel icons. Each provider ships a dark-theme (light fill) and a
-// light-theme (dark fill) variant; the active provider + current theme pick one.
-const PANEL_ICONS = {
-    codex: {
-        dark: [['icons', 'codex-stats-symbolic.svg'], ['codex-stats-symbolic.svg']],
-        light: [['icons', 'codex-stats-symbolic-light.svg'], ['codex-stats-symbolic-light.svg']],
-    },
-    claude: {
-        dark: [['icons', 'claude-symbolic.svg'], ['claude-symbolic.svg']],
-        light: [['icons', 'claude-symbolic-light.svg'], ['claude-symbolic-light.svg']],
-    },
+// Naming gotcha: internally `primary` is the 5-hour window and `secondary` the
+// weekly one. These are the labels used when the helper payload omits its own.
+const GAUGE_FALLBACK_LABELS = {
+    primary: '5h',
+    secondary: 'Week',
 };
-const VIEW_LABELS = {
-    day: 'Day',
-    week: 'Week',
-    month: 'Month',
-    three_months: '3M',
-};
-// Provider registry. Adding a provider here (plus its helper source adapter and,
-// if it has its own enable key, an entry in _enabledProviders) surfaces it in the
-// popover selector without touching the panel/menu rendering.
-const PROVIDERS = [
-    {id: 'codex', label: 'Codex'},
-    {id: 'claude', label: 'Claude'},
+// Settings that change helper arguments or panel formatting but not which
+// providers are visible (those live in PROVIDER_KEYS).
+const REFRESH_KEYS = [
+    'refresh-interval',
+    'panel-show-usage',
+    'cache-enabled',
+    'account-limits-enabled',
+    'claude-limits-file',
+    'claude-online-usage',
 ];
 
 export default class CodexStatsExtension extends Extension {
@@ -49,13 +41,20 @@ export default class CodexStatsExtension extends Extension {
         this._themeSignals = [];
         this._timeoutId = null;
         this._followupRefreshIds = [];
-        this._refreshSerial = 0;
-        this._activeView = 'day';
-        this._activeProvider = this._resolveActiveProvider();
+        // Monotonic for the whole object lifetime: GNOME Shell reuses the
+        // instance across disable()/enable(), and resetting it here would let a
+        // cancelled refresh from the previous cycle match the new cycle's serial
+        // and write its cancellation fallbacks into the fresh UI.
+        this._refreshSerial ??= 0;
         this._statsExpanded = false;
-        this._data = null;
+        // Helper payloads keyed by provider id; {} until the first refresh lands.
+        this._data = {};
+        this._visible = [];
         this._loading = false;
+        this._panelIconKey = null;
         this._cancellable = new Gio.Cancellable();
+
+        this._resolveVisibleProviders();
 
         this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
         this._indicator.add_style_class_name('codex-stats-panel-button');
@@ -65,7 +64,6 @@ export default class CodexStatsExtension extends Extension {
             y_align: Clutter.ActorAlign.CENTER,
         });
         this._panelIcon = new St.Icon({
-            gicon: this._panelGIcon(),
             icon_size: 14,
             style_class: 'codex-stats-panel-icon',
         });
@@ -77,14 +75,16 @@ export default class CodexStatsExtension extends Extension {
         this._panelBox.add_child(this._panelIcon);
         this._panelBox.add_child(this._panelLabel);
         this._indicator.add_child(this._panelBox);
+        this._updatePanelIcon();
 
         this._indicator.menu.box.add_style_class_name('codex-stats-popup');
         this._buildMenu();
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-        this._signals.push(this._settings.connect('changed::active-provider', () => this._onProviderChanged()));
-        this._signals.push(this._settings.connect('changed::claude-enabled', () => this._onProviderChanged()));
-        for (const key of ['refresh-interval', 'log-root', 'panel-show-usage', 'cache-enabled', 'account-limits-enabled', 'claude-log-root', 'claude-limits-file', 'claude-online-usage'])
+        this._signals.push(this._settings.connect('changed::panel-provider', () => this._updatePanel()));
+        for (const key of PROVIDER_KEYS)
+            this._signals.push(this._settings.connect(`changed::${key}`, () => this._onProviderChanged()));
+        for (const key of REFRESH_KEYS)
             this._signals.push(this._settings.connect(`changed::${key}`, () => this._onSettingsChanged()));
         this._connectThemeSignal(this._interfaceSettings, 'changed::color-scheme');
         this._connectThemeSignal(this._interfaceSettings, 'changed::gtk-theme');
@@ -94,6 +94,9 @@ export default class CodexStatsExtension extends Extension {
     }
 
     disable() {
+        // Bump the serial before cancelling so any in-flight _refreshData() sees
+        // itself as stale and touches neither the settings nor the destroyed UI.
+        this._refreshSerial++;
         this._cancellable?.cancel();
         this._cancellable = null;
 
@@ -118,19 +121,37 @@ export default class CodexStatsExtension extends Extension {
 
         this._indicator?.destroy();
         this._indicator = null;
+        this._panelBox = null;
         this._panelIcon = null;
         this._panelLabel = null;
+        this._panelIconKey = null;
+        this._titleLabel = null;
+        this._subtitleLabel = null;
+        this._summaryBox = null;
         this._statsToggleButton = null;
         this._statsToggleLabel = null;
         this._statsToggleIcon = null;
-        this._contentBox = null;
-        this._tabsBox = null;
-        this._providerBox = null;
+        this._historyScroll = null;
+        this._historyBox = null;
+
+        this._data = {};
+        this._visible = [];
+        this._loading = false;
     }
 
     _onSettingsChanged() {
         this._setupTimeout();
         this._refreshData();
+        this._updatePanel();
+    }
+
+    _onProviderChanged() {
+        this._data = {};
+        this._resolveVisibleProviders();
+        this._setupTimeout();
+        // Force: a refresh may already be in flight for the old provider set, and
+        // a non-forced call would be dropped, leaving "Loading" until the next tick.
+        this._refreshData(true);
         this._updatePanel();
     }
 
@@ -145,6 +166,35 @@ export default class CodexStatsExtension extends Extension {
             this._refreshData();
             return GLib.SOURCE_CONTINUE;
         });
+    }
+
+    // Codex is always tracked. The others show up only when explicitly enabled
+    // AND their data root exists, so users never see empty blocks for tools they
+    // do not have installed.
+    _resolveVisibleProviders() {
+        if (!this._settings) {
+            this._visible = [];
+            return this._visible;
+        }
+
+        this._visible = PROVIDERS.filter(provider => {
+            if (!provider.enabledKey)
+                return true;
+            if (!this._settings.get_boolean(provider.enabledKey))
+                return false;
+            const root = expandHome(this._settings.get_string(provider.rootKey) || provider.defaultRoot);
+            return GLib.file_test(root, GLib.FileTest.EXISTS);
+        });
+        return this._visible;
+    }
+
+    // The provider whose gauges go in the top bar. null until the user picks one
+    // in Preferences, or when the picked provider is not currently visible.
+    _panelProvider() {
+        const id = this._settings?.get_string('panel-provider') || '';
+        if (!id)
+            return null;
+        return this._visible.find(provider => provider.id === id) || null;
     }
 
     _buildMenu() {
@@ -182,11 +232,6 @@ export default class CodexStatsExtension extends Extension {
         header.add_child(settingsButton);
 
         this._indicator.menu.box.add_child(header);
-
-        this._providerBox = new St.BoxLayout({
-            style_class: 'codex-stats-tabs codex-stats-provider-tabs',
-        });
-        this._indicator.menu.box.add_child(this._providerBox);
 
         this._summaryBox = new St.BoxLayout({
             style_class: 'codex-stats-summary',
@@ -226,19 +271,22 @@ export default class CodexStatsExtension extends Extension {
         });
         this._indicator.menu.box.add_child(this._statsToggleButton);
 
-        this._tabsBox = new St.BoxLayout({
-            style_class: 'codex-stats-tabs',
+        // One scroll area for every provider's 7-day history.
+        this._historyScroll = new St.ScrollView({
+            style_class: 'codex-stats-history-scroll vfade',
+            hscrollbar_policy: St.PolicyType.NEVER,
+            vscrollbar_policy: St.PolicyType.AUTOMATIC,
+            overlay_scrollbars: true,
+            x_expand: true,
         });
-        this._indicator.menu.box.add_child(this._tabsBox);
-
-        this._contentBox = new St.BoxLayout({
-            style_class: 'codex-stats-content',
+        this._historyBox = new St.BoxLayout({
+            style_class: 'codex-stats-history',
             vertical: true,
+            x_expand: true,
         });
-        this._indicator.menu.box.add_child(this._contentBox);
+        this._historyScroll.set_child(this._historyBox);
+        this._indicator.menu.box.add_child(this._historyScroll);
 
-        this._renderProviderTabs();
-        this._renderTabs();
         this._updateStatsDisclosure();
         this._updateMenu();
     }
@@ -256,48 +304,68 @@ export default class CodexStatsExtension extends Extension {
     }
 
     async _refreshData(force = false, followup = false) {
+        if (!this._settings)
+            return;
         if (this._loading && !force)
             return;
 
         if (force && !followup)
             this._clearFollowupRefreshes();
 
+        // A provider's root can appear or disappear between ticks, so re-resolve
+        // before every spawn round.
+        const providers = this._resolveVisibleProviders().slice();
+
         const serial = ++this._refreshSerial;
         this._loading = true;
-        this._subtitleLabel?.set_text(_('Refreshing...'));
-        this._updatePanel();
 
         try {
-            const payload = await this._runHelper();
-            if (serial !== this._refreshSerial)
+            this._subtitleLabel?.set_text(_('Refreshing...'));
+            this._updatePanel();
+            // allSettled (not all): one broken provider must not blank the others.
+            const results = await Promise.allSettled(providers.map(provider => this._runHelper(provider)));
+            if (serial !== this._refreshSerial || !this._settings)
                 return;
-            this._data = payload;
-        } catch (error) {
-            if (serial !== this._refreshSerial)
-                return;
-            logError(error, 'AI Usage Stats: helper refresh failed');
-            this._data = {
-                status: {
-                    ok: false,
-                    message: error.message || String(error),
-                    files_scanned: 0,
-                },
-                today: {total_tokens: 0, hourly: []},
-                limits: {
-                    primary: {label: '5h', remaining_percent: null, used_percent: null, resets_at: null},
-                    secondary: {label: 'Week', remaining_percent: null, used_percent: null, resets_at: null},
-                },
-                history: {week: [], month: [], three_months: []},
-            };
+
+            const data = {};
+            providers.forEach((provider, index) => {
+                const result = results[index];
+                if (result.status === 'fulfilled') {
+                    data[provider.id] = result.value;
+                    return;
+                }
+                const error = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+                logError(error, `AI Usage Stats: ${provider.id} helper refresh failed`);
+                data[provider.id] = this._fallbackPayload(error);
+            });
+            this._data = data;
         } finally {
             if (serial === this._refreshSerial) {
                 this._loading = false;
-                this._updatePanel();
-                this._updateMenu();
-                if (force && !followup)
-                    this._scheduleFollowupRefreshes();
+                if (this._settings) {
+                    this._updatePanel();
+                    this._updateMenu();
+                    if (force && !followup)
+                        this._scheduleFollowupRefreshes();
+                }
             }
         }
+    }
+
+    _fallbackPayload(error) {
+        return {
+            status: {
+                ok: false,
+                message: error?.message || String(error),
+                files_scanned: 0,
+            },
+            today: {total_tokens: 0, hourly: []},
+            limits: {
+                primary: {label: '5h', remaining_percent: null, used_percent: null, resets_at: null},
+                secondary: {label: 'Week', remaining_percent: null, used_percent: null, resets_at: null},
+            },
+            history: {week: [], month: [], three_months: []},
+        };
     }
 
     _clearFollowupRefreshes() {
@@ -319,46 +387,59 @@ export default class CodexStatsExtension extends Extension {
         }
     }
 
-    _runHelper() {
+    _helperArgv(provider) {
+        const python = GLib.find_program_in_path('python3') || GLib.find_program_in_path('python') || '/usr/bin/python';
+        const cacheFile = GLib.build_filenamev([GLib.get_user_cache_dir(), 'codex-stats', `cache-${provider.id}.json`]);
+        const argv = [
+            python,
+            this._helperPath(),
+            '--json',
+            '--provider',
+            provider.id,
+            '--cache-file',
+            cacheFile,
+            '--log-root',
+            this._settings.get_string(provider.rootKey) || provider.defaultRoot,
+        ];
+
+        if (!this._settings.get_boolean('cache-enabled'))
+            argv.push('--no-cache');
+
+        if (provider.id === 'codex' && !this._settings.get_boolean('account-limits-enabled'))
+            argv.push('--no-account-limits');
+
+        if (provider.id === 'claude') {
+            const limitsFile = this._settings.get_string('claude-limits-file');
+            if (limitsFile)
+                argv.push('--limits-file', limitsFile);
+            if (this._settings.get_boolean('claude-online-usage'))
+                argv.push('--claude-online');
+        }
+
+        return argv;
+    }
+
+    _runHelper(provider) {
         return new Promise((resolve, reject) => {
-            const python = GLib.find_program_in_path('python3') || GLib.find_program_in_path('python') || '/usr/bin/python';
-            const helperPath = this._helperPath();
-            const provider = this._activeProvider;
-            const cacheFile = GLib.build_filenamev([GLib.get_user_cache_dir(), 'codex-stats', `cache-${provider}.json`]);
-            const argv = [
-                python,
-                helperPath,
-                '--json',
-                '--provider',
-                provider,
-                '--cache-file',
-                cacheFile,
-            ];
-            if (provider === 'claude') {
-                argv.push('--log-root', this._settings.get_string('claude-log-root'));
-                const limitsFile = this._settings.get_string('claude-limits-file');
-                if (limitsFile)
-                    argv.push('--limits-file', limitsFile);
-                if (this._settings.get_boolean('claude-online-usage'))
-                    argv.push('--claude-online');
-            } else {
-                argv.push('--log-root', this._settings.get_string('log-root'));
-            }
-            if (!this._settings.get_boolean('cache-enabled'))
-                argv.push('--no-cache');
-            if (provider === 'codex' && !this._settings.get_boolean('account-limits-enabled'))
-                argv.push('--no-account-limits');
+            const argv = this._helperArgv(provider);
+            // Hold a local reference: disable() nulls this._cancellable while the
+            // callback may still be pending.
+            const cancellable = this._cancellable;
 
             const proc = Gio.Subprocess.new(
                 argv,
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
 
-            proc.communicate_utf8_async(null, this._cancellable, (subprocess, result) => {
+            proc.communicate_utf8_async(null, cancellable, (subprocess, result) => {
                 try {
                     const [, stdout, stderr] = subprocess.communicate_utf8_finish(result);
-                    if (this._cancellable?.is_cancelled())
+                    // Always settle — Promise.allSettled in _refreshData waits for
+                    // every provider, so a silent return would hang the refresh.
+                    if (cancellable?.is_cancelled()) {
+                        reject(new Error(`${provider.id} helper refresh cancelled`));
                         return;
+                    }
 
                     const trimmed = (stdout || '').trim();
                     if (!trimmed) {
@@ -367,7 +448,7 @@ export default class CodexStatsExtension extends Extension {
                     }
                     resolve(JSON.parse(trimmed));
                 } catch (error) {
-                    reject(error);
+                    reject(error instanceof Error ? error : new Error(String(error)));
                 }
             });
         });
@@ -380,10 +461,15 @@ export default class CodexStatsExtension extends Extension {
         return GLib.build_filenamev([this.path, 'codex_stats_helper.py']);
     }
 
-    _panelGIcon() {
-        const icons = PANEL_ICONS[this._activeProvider] || PANEL_ICONS.codex;
-        const paths = this._prefersDarkTheme() ? icons.dark : icons.light;
-        for (const relativePath of paths) {
+    // Per-provider icon. Each provider ships a dark-theme (light fill) and a
+    // light-theme (dark fill) variant; `gnome-extensions pack` flattens extra
+    // sources to the extension root, so check icons/ first then the flat path.
+    _providerGIcon(provider) {
+        if (!provider)
+            return Gio.ThemedIcon.new('utilities-terminal-symbolic');
+
+        const stem = this._prefersDarkTheme() ? provider.icon : `${provider.icon}-light`;
+        for (const relativePath of [['icons', `${stem}.svg`], [`${stem}.svg`]]) {
             const iconPath = GLib.build_filenamev([this.path, ...relativePath]);
             if (GLib.file_test(iconPath, GLib.FileTest.EXISTS))
                 return Gio.FileIcon.new(Gio.File.new_for_path(iconPath));
@@ -404,9 +490,25 @@ export default class CodexStatsExtension extends Extension {
         ].some(themeName => themeName.toLowerCase().includes('dark'));
     }
 
+    // St.Icon compares gicons by pointer, so reassigning an equivalent FileIcon
+    // reloads the texture. Only swap when the provider or theme actually changed.
     _updatePanelIcon() {
-        if (this._panelIcon)
-            this._panelIcon.gicon = this._panelGIcon();
+        if (!this._panelIcon)
+            return;
+
+        const provider = this._panelProvider();
+        const key = `${provider?.id || 'none'}:${this._prefersDarkTheme() ? 'dark' : 'light'}`;
+        if (key === this._panelIconKey)
+            return;
+
+        this._panelIcon.gicon = this._providerGIcon(provider);
+        this._panelIconKey = key;
+    }
+
+    _onThemeChanged() {
+        this._panelIconKey = null;
+        this._updatePanelIcon();
+        this._updateMenu();
     }
 
     _settingsForSchema(schemaId) {
@@ -417,13 +519,15 @@ export default class CodexStatsExtension extends Extension {
 
     _connectThemeSignal(settings, signalName) {
         if (settings)
-            this._themeSignals.push([settings, settings.connect(signalName, () => this._updatePanelIcon())]);
+            this._themeSignals.push([settings, settings.connect(signalName, () => this._onThemeChanged())]);
     }
 
-    _codexLimits() {
+    // Codex publishes several windows but only the freshest observation is
+    // trustworthy, so keep the limits sharing the newest observed_at.
+    _codexLimits(payload) {
         const candidates = [
-            this._data?.limits?.primary,
-            this._data?.limits?.secondary,
+            payload?.limits?.primary,
+            payload?.limits?.secondary,
         ].filter(limit => typeof limit?.remaining_percent === 'number' &&
             Number.isFinite(limit.remaining_percent));
         const observed = candidates.map(limit => ({
@@ -443,90 +547,198 @@ export default class CodexStatsExtension extends Extension {
             .map(candidate => candidate.limit);
     }
 
+    // A provider with no declared gauges (OpenCode) has no rate-limit data at
+    // all; one whose gauges simply have no value yet still shows "--" rows.
+    _providerHasGauges(provider) {
+        if (provider.gauges === 'codex-freshest')
+            return true;
+        if (Array.isArray(provider.gauges) && provider.gauges.length)
+            return true;
+        return !!(provider.extraGauges || []).length;
+    }
+
+    _gaugeRows(provider, payload) {
+        const limits = payload?.limits || {};
+        const rows = [];
+
+        if (provider.gauges === 'codex-freshest') {
+            for (const limit of this._codexLimits(payload)) {
+                rows.push({
+                    label: limit.label || '',
+                    percent: limit.remaining_percent,
+                    resetsAt: limit.resets_at,
+                    includeDate: limit.label === 'Week',
+                });
+            }
+        } else {
+            for (const key of provider.gauges || []) {
+                const limit = limits[key] || {};
+                rows.push({
+                    label: limit.label || GAUGE_FALLBACK_LABELS[key] || key,
+                    percent: limit.remaining_percent,
+                    resetsAt: limit.resets_at,
+                    includeDate: key === 'secondary',
+                });
+            }
+        }
+
+        // Extra buckets (Claude's Fable weekly) are rendered on every refresh
+        // while their gate is on, so the row never flickers in and out; the value
+        // shows "--" when the source is momentarily unavailable.
+        for (const extra of provider.extraGauges || []) {
+            if (extra.whenKey && !this._settings.get_boolean(extra.whenKey))
+                continue;
+            const limit = limits[extra.key] || {};
+            rows.push({
+                label: extra.label,
+                percent: limit.remaining_percent,
+                resetsAt: limit.resets_at,
+                includeDate: true,
+            });
+        }
+
+        return rows;
+    }
+
     _updatePanel() {
-        if (!this._panelLabel)
+        if (!this._panelLabel || !this._settings)
             return;
+
+        this._updatePanelIcon();
 
         const showUsage = this._settings.get_boolean('panel-show-usage');
         this._panelLabel.visible = showUsage;
         if (!showUsage)
             return;
 
-        if (this._activeProvider === 'codex') {
-            const limits = this._codexLimits();
-            this._panelLabel.set_text(limits
-                .map(limit => `${limit.label || ''} ${this._formatPercent(limit.remaining_percent)}`.trim())
-                .join('  '));
+        const provider = this._panelProvider();
+        this._panelLabel.remove_style_class_name('codex-stats-panel-label-placeholder');
+
+        if (!provider) {
+            this._panelLabel.add_style_class_name('codex-stats-panel-label-placeholder');
+            this._panelLabel.set_text(_('Select provider'));
             return;
         }
 
-        const primary = this._data?.limits?.primary || {};
-        const secondary = this._data?.limits?.secondary || {};
-        this._panelLabel.set_text(`${primary.label || '5h'} ${this._formatPercent(primary.remaining_percent)}  ${secondary.label || 'Week'} ${this._formatPercent(secondary.remaining_percent)}`);
+        const payload = this._data[provider.id];
+        if (!this._providerHasGauges(provider)) {
+            this._panelLabel.set_text(`${_('Today')} ${this._formatTokens(payload?.today?.total_tokens)}`);
+            return;
+        }
+
+        const rows = this._gaugeRows(provider, payload);
+        if (!rows.length) {
+            this._panelLabel.set_text('--');
+            return;
+        }
+
+        this._panelLabel.set_text(rows
+            .map(row => `${row.label} ${this._formatPercent(row.percent)}`.trim())
+            .join('  '));
     }
 
     _updateMenu() {
-        if (!this._summaryBox || !this._contentBox)
+        if (!this._summaryBox)
             return;
 
         this._summaryBox.destroy_all_children();
-        this._contentBox.destroy_all_children();
 
-        const data = this._data;
-        if (!data) {
-            this._summaryBox.add_child(this._label(_('Loading local usage...'), 'codex-stats-muted'));
+        if (!this._visible.length) {
+            this._subtitleLabel?.set_text(_('Local usage'));
+            this._summaryBox.add_child(this._label(
+                _('No provider data found. Enable a provider in Preferences.'),
+                'codex-stats-muted'
+            ));
+            this._updateStatsDisclosure();
             return;
         }
 
-        const status = data.status || {};
-        const generated = data.generated_at ? this._formatTime(data.generated_at) : '--';
-        this._subtitleLabel?.set_text(status.ok === false ? _('Needs attention') : _('Updated %s').format(generated));
+        const payloads = this._visible
+            .map(provider => this._data[provider.id])
+            .filter(payload => !!payload);
 
-        this._summaryBox.add_child(this._metricRow(_('Today'), this._formatTokens(data?.today?.total_tokens), _('tokens burned')));
-        if (this._activeProvider === 'codex') {
-            for (const limit of this._codexLimits()) {
-                this._summaryBox.add_child(this._metricRow(
-                    limit.label || '',
-                    this._formatPercent(limit.remaining_percent),
-                    this._resetText(limit.resets_at, limit.label === 'Week')
-                ));
-            }
+        if (!payloads.length) {
+            this._summaryBox.add_child(this._label(_('Loading local usage...'), 'codex-stats-muted'));
+            this._updateStatsDisclosure();
+            return;
+        }
+
+        if (payloads.some(payload => payload?.status?.ok === false)) {
+            this._subtitleLabel?.set_text(_('Needs attention'));
         } else {
-            this._summaryBox.add_child(this._metricRow(
-                data?.limits?.primary?.label || _('5h'),
-                this._formatPercent(data?.limits?.primary?.remaining_percent),
-                this._resetText(data?.limits?.primary?.resets_at)
-            ));
-            this._summaryBox.add_child(this._metricRow(
-                data?.limits?.secondary?.label || _('Week'),
-                this._formatPercent(data?.limits?.secondary?.remaining_percent),
-                this._resetText(data?.limits?.secondary?.resets_at, true)
-            ));
+            const stamps = payloads
+                .map(payload => (payload.generated_at ? Date.parse(payload.generated_at) : Number.NaN))
+                .filter(stamp => Number.isFinite(stamp));
+            const generated = stamps.length ? this._formatTime(new Date(Math.max(...stamps))) : '--';
+            this._subtitleLabel?.set_text(_('Updated %s').format(generated));
         }
 
-        // "Fable only" weekly bucket (Claude online source only). Rendered on every
-        // refresh when online mode is on, so the row never flickers in/out; the value
-        // shows "--" when the online source is momentarily unavailable (429/backoff/
-        // cold start) instead of the whole row disappearing. Opus is intentionally not
-        // shown — it is already counted in the All-models (Week) gauge, matching how
-        // Claude web/desktop present per-model usage.
-        if (this._activeProvider === 'claude' && this._settings.get_boolean('claude-online-usage')) {
-            const fable = data?.limits?.fable_weekly;
-            this._summaryBox.add_child(this._metricRow(
-                _('Fable'),
-                this._formatPercent(fable?.remaining_percent),
-                this._resetText(fable?.resets_at, true)
-            ));
+        let rendered = 0;
+        for (const provider of this._visible) {
+            const payload = this._data[provider.id];
+            if (!payload)
+                continue;
+            this._summaryBox.add_child(this._providerBlock(provider, payload, rendered > 0));
+            rendered++;
         }
-
-        if (status.message)
-            this._summaryBox.add_child(this._label(status.message, status.ok === false ? 'codex-stats-error' : 'codex-stats-muted'));
 
         this._updateStatsDisclosure();
     }
 
+    _providerBlock(provider, payload, divider) {
+        const box = new St.BoxLayout({
+            style_class: divider
+                ? 'codex-stats-provider codex-stats-provider-divider'
+                : 'codex-stats-provider',
+            vertical: true,
+            x_expand: true,
+        });
+
+        const header = new St.BoxLayout({
+            style_class: 'codex-stats-provider-header',
+            x_expand: true,
+        });
+        header.add_child(new St.Icon({
+            gicon: this._providerGIcon(provider),
+            icon_size: 16,
+            style_class: 'codex-stats-provider-icon',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        header.add_child(new St.Label({
+            text: provider.label,
+            style_class: 'codex-stats-provider-name',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        header.add_child(new St.Label({
+            text: _('Today'),
+            style_class: 'codex-stats-provider-today-label',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        header.add_child(new St.Label({
+            text: this._formatTokens(payload?.today?.total_tokens),
+            style_class: 'codex-stats-provider-today-value',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        box.add_child(header);
+
+        for (const row of this._gaugeRows(provider, payload)) {
+            box.add_child(this._metricRow(
+                row.label,
+                this._formatPercent(row.percent),
+                this._resetText(row.resetsAt, row.includeDate)
+            ));
+        }
+
+        const status = payload?.status || {};
+        if (status.message)
+            box.add_child(this._label(status.message, status.ok === false ? 'codex-stats-error' : 'codex-stats-muted'));
+
+        return box;
+    }
+
     _updateStatsDisclosure() {
-        if (!this._tabsBox || !this._contentBox)
+        if (!this._historyScroll || !this._historyBox)
             return;
 
         if (this._statsToggleLabel)
@@ -534,179 +746,51 @@ export default class CodexStatsExtension extends Extension {
         if (this._statsToggleIcon)
             this._statsToggleIcon.set_icon_name(this._statsExpanded ? 'pan-down-symbolic' : 'pan-end-symbolic');
 
-        this._tabsBox.visible = this._statsExpanded;
-        this._contentBox.visible = this._statsExpanded;
-        this._contentBox.destroy_all_children();
+        this._historyScroll.visible = this._statsExpanded;
+        this._historyBox.destroy_all_children();
 
         if (this._statsExpanded)
-            this._renderView();
+            this._renderHistory();
     }
 
-    _enabledProviders() {
-        return PROVIDERS.filter(provider => provider.id === 'codex' || this._settings.get_boolean('claude-enabled'));
-    }
+    _renderHistory() {
+        let rows = 0;
 
-    _resolveActiveProvider() {
-        const provider = this._settings.get_string('active-provider') || 'codex';
-        return this._enabledProviders().some(entry => entry.id === provider) ? provider : 'codex';
-    }
-
-    _onProviderChanged() {
-        this._activeProvider = this._resolveActiveProvider();
-        this._data = null;
-        this._updatePanelIcon();
-        this._renderProviderTabs();
-        this._onSettingsChanged();
-    }
-
-    _renderProviderTabs() {
-        if (!this._providerBox)
-            return;
-        this._providerBox.destroy_all_children();
-
-        const providers = this._enabledProviders();
-        this._providerBox.visible = providers.length > 1;
-        if (providers.length <= 1)
-            return;
-
-        for (const provider of providers) {
-            const button = new St.Button({
-                label: provider.label,
-                style_class: provider.id === this._activeProvider
-                    ? 'button codex-stats-tab codex-stats-tab-active'
-                    : 'button codex-stats-tab',
-                can_focus: true,
-                reactive: true,
-                track_hover: true,
-            });
-            button.connect('clicked', () => {
-                if (provider.id !== this._activeProvider)
-                    this._settings.set_string('active-provider', provider.id);
-            });
-            this._providerBox.add_child(button);
-        }
-    }
-
-    _renderTabs() {
-        if (!this._tabsBox)
-            return;
-        this._tabsBox.destroy_all_children();
-        for (const view of VIEWS) {
-            const button = new St.Button({
-                label: VIEW_LABELS[view],
-                style_class: view === this._activeView ? 'button codex-stats-tab codex-stats-tab-active' : 'button codex-stats-tab',
-                can_focus: true,
-                reactive: true,
-                track_hover: true,
-            });
-            button.connect('clicked', () => {
-                this._activeView = view;
-                this._renderTabs();
-                this._updateStatsDisclosure();
-            });
-            this._tabsBox.add_child(button);
-        }
-    }
-
-    _renderView() {
-        if (!this._contentBox)
-            return;
-        this._contentBox.destroy_all_children();
-
-        const data = this._data;
-        if (!data)
-            return;
-
-        if (this._activeView === 'day') {
-            this._contentBox.add_child(this._sectionTitle(_('Today by hour')));
-            this._renderRows(this._hourlyRows(data.today?.hourly || [], data.generated_at));
-            return;
+        if (!this._visible.length) {
+            this._historyBox.add_child(this._label(
+                _('No provider data found. Enable a provider in Preferences.'),
+                'codex-stats-muted'
+            ));
+            rows = 1;
+        } else {
+            for (const provider of this._visible) {
+                const payload = this._data[provider.id];
+                const series = this._objectRows(payload?.history?.week || []);
+                this._historyBox.add_child(this._sectionTitle(_('%s — last 7 days').format(provider.label)));
+                this._renderRows(series, this._historyBox);
+                rows += 1 + Math.max(1, series.length);
+            }
         }
 
-        const series = this._activeView === 'three_months'
-            ? data.history?.three_months || []
-            : data.history?.[this._activeView] || [];
-        this._contentBox.add_child(this._sectionTitle(VIEW_LABELS[this._activeView]));
-        this._renderRows(this._objectRows(series));
+        this._historyScroll.set_height(Math.min(MAX_SERIES_HEIGHT, Math.max(72, rows * SERIES_ROW_HEIGHT)));
     }
 
-    _renderRows(rows) {
+    _renderRows(rows, target) {
         if (!rows.length) {
-            this._contentBox.add_child(this._label(_('No local usage in this range.'), 'codex-stats-muted'));
+            target.add_child(this._label(_('No local usage in this range.'), 'codex-stats-muted'));
             return;
         }
 
         const max = Math.max(1, ...rows.map(row => row.value || 0));
-        const scrollView = new St.ScrollView({
-            style_class: 'codex-stats-series-scroll vfade',
-            hscrollbar_policy: St.PolicyType.NEVER,
-            vscrollbar_policy: St.PolicyType.AUTOMATIC,
-            overlay_scrollbars: true,
-            x_expand: true,
-        });
-        scrollView.set_height(Math.min(MAX_SERIES_HEIGHT, Math.max(72, rows.length * SERIES_ROW_HEIGHT)));
-
         const seriesBox = new St.BoxLayout({
             style_class: 'codex-stats-series',
             vertical: true,
             x_expand: true,
         });
-        scrollView.set_child(seriesBox);
-        this._contentBox.add_child(scrollView);
+        target.add_child(seriesBox);
 
         for (const row of rows)
             seriesBox.add_child(this._barRow(row.label, row.value, max, row.muted));
-    }
-
-    _hourlyRows(values, generatedAt) {
-        const limit = this._hourLimit(values, generatedAt);
-        const rows = [];
-        let zeroStart = null;
-
-        const flushZeros = end => {
-            if (zeroStart === null)
-                return;
-            rows.push({
-                label: zeroStart === end ? this._hourLabel(zeroStart) : `${String(zeroStart).padStart(2, '0')}-${String(end).padStart(2, '0')}`,
-                value: 0,
-                muted: true,
-            });
-            zeroStart = null;
-        };
-
-        for (let index = 0; index < limit; index++) {
-            const value = Math.max(0, Number(values[index] || 0));
-            if (value === 0) {
-                if (zeroStart === null)
-                    zeroStart = index;
-                continue;
-            }
-
-            flushZeros(index - 1);
-            rows.push({
-                label: this._hourLabel(index),
-                value,
-                muted: false,
-            });
-        }
-
-        flushZeros(limit - 1);
-        return rows;
-    }
-
-    _hourLimit(values, generatedAt) {
-        if (!values.length)
-            return 0;
-
-        const generated = generatedAt ? new Date(generatedAt) : new Date();
-        if (Number.isNaN(generated.getTime()))
-            return values.length;
-
-        return Math.min(values.length, generated.getHours() + 1);
-    }
-
-    _hourLabel(hour) {
-        return `${String(hour).padStart(2, '0')}:00`;
     }
 
     _objectRows(items) {
