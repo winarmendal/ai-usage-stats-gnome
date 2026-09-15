@@ -424,6 +424,42 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(snapshots["secondary"].used_percent, 3)
         self.assertEqual(snapshots["primary"].source, "codex-account")
 
+    def test_codex_payload_carries_new_provider_status_keys_with_defaults(self) -> None:
+        # The status object is a contract with extension.js: the Grok/OpenCode keys
+        # must exist (at their defaults) even for a Codex payload.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_file = root / "cache.json"
+            self.write_jsonl(root / "rollout-2026-05-29T11-01-36-abc.jsonl", [token_event("2026-05-29T04:10:00.000Z", 100)])
+            payload = self.build(root, cache_file, "2026-05-29T20:00:00+07:00")
+            status = payload["status"]
+            self.assertEqual(status["grok_limit_snapshots"], 0)
+            self.assertEqual(status["opencode_rows_scanned"], 0)
+            self.assertEqual(status["opencode_rows_cached"], 0)
+            self.assertEqual(status["opencode_db_status"], "")
+
+    def test_parse_rfc3339_ts(self) -> None:
+        cases = [
+            # Nanosecond precision (Grok) must not be rejected the way
+            # datetime.fromisoformat rejects it on Python 3.10.
+            ("2026-09-14T14:29:18.082965175+00:00", 1789396158.082965),
+            ("2026-09-14T14:29:18.082965+00:00", 1789396158.082965),
+            ("2026-09-14T14:29:18.082Z", 1789396158.082),
+            ("2026-09-14T14:29:18Z", 1789396158.0),
+            ("2026-09-14T21:29:18+07:00", 1789396158.0),
+            # Naive values are read as UTC by default.
+            ("2026-09-14T14:29:18", 1789396158.0),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                parsed = helper.parse_rfc3339_ts(value)
+                self.assertIsNotNone(parsed)
+                self.assertAlmostEqual(parsed, expected, places=5)
+
+        for bad in ("", "not-a-timestamp", None, 17, {}):
+            with self.subTest(value=bad):
+                self.assertIsNone(helper.parse_rfc3339_ts(bad))
+
 
 if __name__ == "__main__":
     unittest.main()
