@@ -251,6 +251,32 @@ def parse_file(path: Path, local_tz: timezone) -> tuple[list[TokenEvent], int]:
     return events, malformed
 
 
+def retain_missing_cache_entries(cached_files: dict[str, Any], seen_paths: set[str]) -> int:
+    """Keep cache entries whose source file has disappeared and count them.
+
+    Claude Code prunes transcripts older than `cleanupPeriodDays` (30 by
+    default), and users may delete sessions by hand. Token history must not
+    shrink when that happens, so the cache doubles as a ledger: an entry for a
+    file that is no longer on disk is kept (flagged `missing`) and its parsed
+    metadata keeps contributing to totals. If the file reappears with the same
+    size/mtime the flag is cleared and the entry is reused; if it differs the
+    file is re-parsed as usual. Only token/limit metadata is retained — never
+    prompt or response text.
+    """
+    retained = 0
+    for key in list(cached_files.keys()):
+        cached = cached_files.get(key)
+        if not isinstance(cached, dict):
+            del cached_files[key]
+            continue
+        if key in seen_paths:
+            cached.pop("missing", None)
+            continue
+        cached["missing"] = True
+        retained += 1
+    return retained
+
+
 def collect_events(log_root: Path, cache_file: Path, use_cache: bool, local_tz: timezone) -> tuple[list[TokenEvent], dict[str, int]]:
     stats = {"files_scanned": 0, "files_parsed": 0, "malformed_lines": 0}
     files = iter_log_files(log_root)
@@ -291,9 +317,12 @@ def collect_events(log_root: Path, cache_file: Path, use_cache: bool, local_tz: 
             "events": [asdict(event) for event in parsed_events],
         }
 
-    for key in list(cached_files.keys()):
-        if key not in seen_paths:
-            del cached_files[key]
+    stats["files_retained"] = retain_missing_cache_entries(cached_files, seen_paths)
+    for key, cached in cached_files.items():
+        if key in seen_paths or not isinstance(cached, dict):
+            continue
+        events.extend(TokenEvent(**event) for event in cached.get("events", []))
+        stats["malformed_lines"] += int(cached.get("malformed_lines", 0) or 0)
 
     if use_cache:
         save_cache(cache_file, cache)
@@ -432,9 +461,14 @@ def collect_claude_events(
             "rows": rows,
         }
 
-    for key in list(cached_files.keys()):
-        if key not in seen_paths:
-            del cached_files[key]
+    stats["files_retained"] = retain_missing_cache_entries(cached_files, seen_paths)
+    for key, cached in cached_files.items():
+        if key in seen_paths or not isinstance(cached, dict):
+            continue
+        rows = cached.get("rows")
+        if isinstance(rows, list):
+            all_rows.extend(rows)
+        stats["malformed_lines"] += int(cached.get("malformed_lines", 0) or 0)
 
     if use_cache:
         save_cache(cache_file, cache)
@@ -1358,6 +1392,7 @@ def aggregate(
             "message": message,
             "files_scanned": stats["files_scanned"],
             "files_parsed": stats["files_parsed"],
+            "files_retained": stats.get("files_retained", 0),
             "malformed_lines": stats["malformed_lines"],
             "live_limit_rows": stats.get("live_limit_rows", 0),
             "live_limit_events": stats.get("live_limit_events", 0),
