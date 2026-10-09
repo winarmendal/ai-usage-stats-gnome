@@ -14,6 +14,7 @@ rm -f "${DIST_DIR}"/*.shell-extension.zip
 cp "${ROOT_DIR}/extension/metadata.json" "${STAGE_DIR}/"
 cp "${ROOT_DIR}/extension/extension.js" "${STAGE_DIR}/"
 cp "${ROOT_DIR}/extension/prefs.js" "${STAGE_DIR}/"
+cp "${ROOT_DIR}/extension/providers.js" "${STAGE_DIR}/"
 cp "${ROOT_DIR}/extension/stylesheet.css" "${STAGE_DIR}/"
 cp "${ROOT_DIR}/extension/icons/"*.svg "${STAGE_DIR}/icons/"
 cp "${ROOT_DIR}/extension/schemas/org.gnome.shell.extensions.codex-stats.gschema.xml" "${STAGE_DIR}/schemas/"
@@ -29,10 +30,15 @@ glib-compile-schemas "${STAGE_DIR}/schemas"
     --force \
     --out-dir="${DIST_DIR}" \
     --schema="${SCHEMA}" \
+    --extra-source="providers.js" \
     --extra-source="icons/codex-stats-symbolic.svg" \
     --extra-source="icons/codex-stats-symbolic-light.svg" \
     --extra-source="icons/claude-symbolic.svg" \
     --extra-source="icons/claude-symbolic-light.svg" \
+    --extra-source="icons/grok-symbolic.svg" \
+    --extra-source="icons/grok-symbolic-light.svg" \
+    --extra-source="icons/opencode-symbolic.svg" \
+    --extra-source="icons/opencode-symbolic-light.svg" \
     --extra-source="helper/codex_stats_helper.py" \
     --extra-source="helper/claude_statusline_capture.py"
 )

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import select
 import shutil
 import sqlite3
@@ -13,6 +14,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +57,37 @@ LIVE_LIMIT_NEWER_TOLERANCE_SECONDS = 2
 ACCOUNT_LIMIT_TIMEOUT_SECONDS = 5.0
 SCHEMA_VERSION = 2
 
+DEFAULT_GROK_ROOT = Path.home() / ".grok"
+# Grok writes one usage.json per session next to chat_history.jsonl,
+# updates.jsonl, system_prompt.txt and terminal/ — all of which hold prompt and
+# response text. The scan is name-scoped to usage.json so those are never opened.
+GROK_USAGE_FILENAME = "usage.json"
+GROK_LOG_RELPATH = Path("logs") / "unified.jsonl"
+GROK_BILLING_MSG = "billing: fetched credits config"
+GROK_LOG_TAIL_BYTES = 1024 * 1024
+GROK_LIMIT_WINDOW_MINUTES = 10080
+GROK_LIMIT_SOURCE = "grok-log"
+GROK_LIMIT_MAX_AGE_SECONDS = 24 * 60 * 60
+
+DEFAULT_OPENCODE_ROOT = Path.home() / ".local" / "share" / "opencode"
+# OpenCode 1.x ships opencode.db; 2.x may ship opencode-prod.db and leave the
+# stale 1.x file behind, so the newest mtime decides which one is live.
+OPENCODE_DB_CANDIDATES = ("opencode.db", "opencode-prod.db")
+OPENCODE_CACHE_SCHEMA_VERSION = 1
+OPENCODE_DB_TIMEOUT_SECONDS = 0.05
+OPENCODE_COLLAPSE_DUPLICATE_ROWS = True
+
+PROVIDER_DEFAULT_ROOTS = {
+    "codex": DEFAULT_LOG_ROOT,
+    "claude": DEFAULT_CLAUDE_LOG_ROOT,
+    "grok": DEFAULT_GROK_ROOT,
+    "opencode": DEFAULT_OPENCODE_ROOT,
+}
+
+# datetime.fromisoformat on Python 3.10 accepts only 3 or 6 fractional digits;
+# Grok writes 9, and other RFC3339 writers may emit 1 or 2.
+RFC3339_FRACTION_RE = re.compile(r"\.\d+")
+
 
 @dataclass(frozen=True)
 class TokenEvent:
@@ -82,8 +115,13 @@ class LimitSnapshot:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate local Codex token usage")
     parser.add_argument("--json", action="store_true", help="print JSON output")
-    parser.add_argument("--provider", choices=("codex", "claude"), default="codex", help="usage provider to aggregate")
-    parser.add_argument("--log-root", default=None, help="session log directory (provider default when omitted)")
+    parser.add_argument(
+        "--provider",
+        choices=("codex", "claude", "grok", "opencode"),
+        default="codex",
+        help="usage provider to aggregate",
+    )
+    parser.add_argument("--log-root", default=None, help="provider home/data directory (provider default when omitted)")
     parser.add_argument("--cache-file", default=None, help="cache JSON path (provider default when omitted)")
     parser.add_argument("--limits-file", default="", help="Claude statusLine rate-limit capture JSON path")
     parser.add_argument("--cowork-log-root", default="", help="Claude Cowork agent-mode audit log root (default: ~/.config/Claude/local-agent-mode-sessions)")
@@ -110,6 +148,27 @@ def parse_datetime(value: str, local_tz: timezone) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=local_tz)
     return parsed.astimezone(local_tz)
+
+
+def parse_rfc3339_ts(value: Any, local_tz: timezone | None = None) -> float | None:
+    """Epoch seconds for an RFC3339 timestamp, tolerating >6 fractional digits.
+
+    Grok writes nanosecond precision (`2026-09-14T14:29:18.082965175+00:00`),
+    and `datetime.fromisoformat` on Python 3.10 accepts only 3 or 6 fractional
+    digits, so the fraction is truncated or zero-padded to microseconds first.
+    A naive value is read in `local_tz` (UTC when not given), matching
+    `parse_datetime`.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    match = RFC3339_FRACTION_RE.search(value)
+    if match is not None:
+        digits = match.group()[1:7].ljust(6, "0")
+        value = f"{value[: match.start()]}.{digits}{value[match.end() :]}"
+    parsed = parse_datetime(value, local_tz or timezone.utc)
+    if parsed is None:
+        return None
+    return parsed.timestamp()
 
 
 def parse_now(value: str) -> datetime:
@@ -406,25 +465,21 @@ def parse_claude_file(path: Path, local_tz: timezone) -> tuple[list[list[Any]], 
     return rows, malformed
 
 
-def collect_claude_events(
-    log_root: Path,
+def collect_cached_rows(
+    files: list[Path],
     cache_file: Path,
     use_cache: bool,
-    local_tz: timezone,
-    cowork_root: Path | None = None,
-) -> tuple[list[TokenEvent], dict[str, int]]:
-    stats = {"files_scanned": 0, "files_parsed": 0, "malformed_lines": 0}
-    files = iter_log_files(log_root)
-    if cowork_root is not None:
-        # Cowork agent-mode usage lives in files named exactly `audit.jsonl`. The
-        # same tree ALSO nests full Claude Code transcripts at
-        # local_*/.claude/projects/**/*.jsonl (camelCase, with prompt text) — a
-        # `*.jsonl` glob would count those too (~2.4x inflation) AND open transcript
-        # files. Name-scoping to `audit.jsonl` reads only the canonical per-session
-        # ledgers and never opens a transcript.
-        files = files + iter_log_files(cowork_root, "audit.jsonl")
-    stats["files_scanned"] = len(files)
+    parse_rows: Callable[[Path], tuple[list[list[Any]], int]],
+    stats: dict[str, int],
+) -> list[list[Any]]:
+    """Parse `files` into dedup rows, reusing unchanged entries from the cache.
 
+    Shared by every row-based provider (Claude Code, Claude Cowork, Grok). An
+    entry is reused when path + size + mtime match; entries whose file has
+    disappeared are retained as a ledger (see `retain_missing_cache_entries`) so
+    history never shrinks. `stats` is updated in place (`files_parsed`,
+    `malformed_lines`, `files_retained`); the caller owns `files_scanned`.
+    """
     cache = load_cache(cache_file) if use_cache else {"schema_version": SCHEMA_VERSION, "files": {}}
     cached_files = cache.setdefault("files", {})
     seen_paths: set[str] = set()
@@ -450,7 +505,7 @@ def collect_claude_events(
             stats["malformed_lines"] += int(cached.get("malformed_lines", 0) or 0)
             continue
 
-        rows, malformed = parse_claude_file(path, local_tz)
+        rows, malformed = parse_rows(path)
         all_rows.extend(rows)
         stats["files_parsed"] += 1
         stats["malformed_lines"] += malformed
@@ -473,15 +528,21 @@ def collect_claude_events(
     if use_cache:
         save_cache(cache_file, cache)
 
-    # Global dedup per API response. last-wins == max total (the final streaming
-    # row carries the complete usage); max is order-independent across files.
+    return all_rows
+
+
+def dedup_rows_to_events(rows: list[list[Any]]) -> list[TokenEvent]:
+    """Collapse `[group_key, ts, total]` rows into one TokenEvent per group.
+
+    last-wins == max total (the final streaming row carries the complete usage);
+    max is order-independent across files. A row with no group key is kept as its
+    own event so distinct unkeyable turns are never merged into an under-count.
+    """
     best: dict[str, tuple[float, int]] = {}
     events: list[TokenEvent] = []
-    for row in all_rows:
+    for row in rows:
         group_key, ts, total = row[0], float(row[1]), int(row[2])
         if group_key is None:
-            # No identifier to dedup on: keep it as its own event so distinct
-            # unkeyable turns are never merged into an under-count.
             events.append(TokenEvent(ts=ts, total_tokens=total, session_ts=0.0))
             continue
         current = best.get(group_key)
@@ -489,7 +550,33 @@ def collect_claude_events(
             best[group_key] = (ts, total)
 
     events.extend(TokenEvent(ts=ts, total_tokens=total, session_ts=0.0) for ts, total in best.values())
-    return events, stats
+    return events
+
+
+def collect_claude_events(
+    log_root: Path,
+    cache_file: Path,
+    use_cache: bool,
+    local_tz: timezone,
+    cowork_root: Path | None = None,
+) -> tuple[list[TokenEvent], dict[str, int]]:
+    stats = {"files_scanned": 0, "files_parsed": 0, "malformed_lines": 0}
+    files = iter_log_files(log_root)
+    if cowork_root is not None:
+        # Cowork agent-mode usage lives in files named exactly `audit.jsonl`. The
+        # same tree ALSO nests full Claude Code transcripts at
+        # local_*/.claude/projects/**/*.jsonl (camelCase, with prompt text) — a
+        # `*.jsonl` glob would count those too (~2.4x inflation) AND open transcript
+        # files. Name-scoping to `audit.jsonl` reads only the canonical per-session
+        # ledgers and never opens a transcript.
+        files = files + iter_log_files(cowork_root, "audit.jsonl")
+    stats["files_scanned"] = len(files)
+
+    all_rows = collect_cached_rows(
+        files, cache_file, use_cache, lambda path: parse_claude_file(path, local_tz), stats
+    )
+    # Global dedup per API response, keyed by sessionId+requestId.
+    return dedup_rows_to_events(all_rows), stats
 
 
 def claude_snapshots_from_rate_limits(rate_limits: Any, ts: float) -> dict[str, LimitSnapshot]:
@@ -1132,6 +1219,450 @@ def collect_account_limit_snapshots(
     return snapshots, stats
 
 
+def parse_grok_usage_file(path: Path) -> tuple[list[list[Any]], int]:
+    """Parse one Grok `usage.json` into `[group_key, ts, total]` rows.
+
+    Only `turns[].endedAt` and `turns[].totalTokens` are read. The file's
+    `session` block is deliberately ignored: resuming or forking a session copies
+    the parent's history into it, so those totals double count. Sibling files in
+    the same session directory hold prompt text and are never opened.
+    """
+    malformed = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return [], 1
+    if not isinstance(payload, dict):
+        return [], 1
+
+    turns = payload.get("turns")
+    if not isinstance(turns, list):
+        return [], malformed
+
+    rows: list[list[Any]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            malformed += 1
+            continue
+        ended_at = turn.get("endedAt")
+        ts = parse_rfc3339_ts(ended_at)
+        if ts is None:
+            malformed += 1
+            continue
+        total = number_or_none(turn.get("totalTokens"))
+        if total is None or total <= 0:
+            continue
+        # endedAt + total is a turn's stable identity: a forked or resumed session
+        # replays the parent's turns verbatim into its own usage.json, and this key
+        # collapses those replays to a single event.
+        rows.append([f"{ended_at}\x00{int(total)}", ts, int(total)])
+    return rows, malformed
+
+
+def collect_grok_events(root: Path, cache_file: Path, use_cache: bool) -> tuple[list[TokenEvent], dict[str, int]]:
+    stats = {"files_scanned": 0, "files_parsed": 0, "malformed_lines": 0}
+    files = iter_log_files(root / "sessions", GROK_USAGE_FILENAME)
+    stats["files_scanned"] = len(files)
+    rows = collect_cached_rows(files, cache_file, use_cache, parse_grok_usage_file, stats)
+    return dedup_rows_to_events(rows), stats
+
+
+def read_tail_lines(path: Path, max_bytes: int) -> list[str]:
+    """Lines from at most the last `max_bytes` of a file.
+
+    Grok's unified.jsonl grows without bound (megabytes), so only the tail is
+    read. When the read starts mid-file the first line is dropped because it is
+    probably truncated.
+    """
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - max_bytes)
+            handle.seek(start)
+            chunk = handle.read()
+    except OSError:
+        return []
+
+    lines = chunk.decode("utf-8", errors="replace").splitlines()
+    if start > 0 and lines:
+        return lines[1:]
+    return lines
+
+
+def grok_snapshot_from_billing_line(line: str, now_ts: float) -> LimitSnapshot | None:
+    """Weekly credit snapshot from one `billing: fetched credits config` log line.
+
+    Privacy: a line is only decoded when it contains the exact billing marker, so
+    tool output and prompt text elsewhere in the log is never parsed, and only
+    `msg`, `ts`, `ctx.config.creditUsagePercent` and
+    `ctx.config.currentPeriod.end` are read. Nothing from the log is cached.
+    """
+    if GROK_BILLING_MSG not in line:
+        return None
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or payload.get("msg") != GROK_BILLING_MSG:
+        return None
+
+    ts = parse_rfc3339_ts(payload.get("ts"))
+    if ts is None:
+        return None
+
+    ctx = payload.get("ctx") if isinstance(payload.get("ctx"), dict) else {}
+    config = ctx.get("config") if isinstance(ctx.get("config"), dict) else {}
+    used = number_or_none(config.get("creditUsagePercent"))
+    if used is None:
+        return None
+
+    period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
+    resets_at = parse_rfc3339_ts(period.get("end"))
+    if resets_at is not None and resets_at <= now_ts:
+        # The weekly period rolled over since this line was written. Mirror the
+        # Codex expired-window rule: the new period starts at 0% used.
+        used = 0.0
+        resets_at = roll_reset_forward(resets_at, GROK_LIMIT_WINDOW_MINUTES, now_ts)
+
+    return LimitSnapshot(
+        ts=ts,
+        session_ts=0.0,
+        used_percent=used,
+        window_minutes=GROK_LIMIT_WINDOW_MINUTES,
+        resets_at=resets_at,
+        source=GROK_LIMIT_SOURCE,
+    )
+
+
+def collect_grok_limit_snapshots(log_file: Path, now: datetime) -> tuple[dict[str, LimitSnapshot], dict[str, int]]:
+    """Newest weekly credit snapshot from the tail of Grok's unified log.
+
+    Grok has no 5-hour window, so only `secondary` (the weekly bucket) is
+    produced and `primary` stays absent, rendering as `--`.
+    """
+    stats = {"grok_limit_snapshots": 0}
+    if not log_file.exists():
+        return {}, stats
+
+    now_ts = now.timestamp()
+    for line in reversed(read_tail_lines(log_file, GROK_LOG_TAIL_BYTES)):
+        snapshot = grok_snapshot_from_billing_line(line, now_ts)
+        if snapshot is None:
+            continue
+        if snapshot.ts > now_ts + 60:
+            continue
+        if now_ts - snapshot.ts > GROK_LIMIT_MAX_AGE_SECONDS:
+            break
+        stats["grok_limit_snapshots"] = 1
+        return {"secondary": snapshot}, stats
+
+    return {}, stats
+
+
+def grok_source(
+    root: Path,
+    cache_file: Path,
+    use_cache: bool,
+    now: datetime,
+) -> tuple[list[TokenEvent], dict[str, int], dict[str, LimitSnapshot]]:
+    events, stats = collect_grok_events(root, cache_file, use_cache)
+    limits, limit_stats = collect_grok_limit_snapshots(root / GROK_LOG_RELPATH, now)
+    stats.update(limit_stats)
+    return events, stats, limits
+
+
+def resolve_opencode_db(root: Path) -> Path | None:
+    """The newest existing OpenCode database among the known candidates."""
+    best: tuple[float, Path] | None = None
+    for name in OPENCODE_DB_CANDIDATES:
+        path = root / name
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, path)
+    return best[1] if best is not None else None
+
+
+def opencode_try_open(uri: str) -> tuple[sqlite3.Connection | None, sqlite3.Error | None]:
+    connection = None
+    try:
+        connection = sqlite3.connect(uri, uri=True, timeout=OPENCODE_DB_TIMEOUT_SECONDS)
+        connection.execute("PRAGMA query_only = true")
+        connection.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+        return connection, None
+    except sqlite3.Error as error:
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+        return None, error
+
+
+def open_opencode_db(db: Path) -> tuple[sqlite3.Connection | None, str]:
+    """Open the OpenCode database read-only. Returns (connection, status).
+
+    The helper never writes, migrates or checkpoints the database. A plain
+    `mode=ro` open can fail when the directory is not writable and SQLite wants
+    to create the `-wal`/`-shm` sidecars; `immutable=1` then reads the main
+    database bytes without any locking (slightly stale, never blocking). A
+    genuinely busy database yields `(None, "locked")` and the caller falls back
+    to its ledger cache rather than stalling the panel.
+    """
+    connection, error = opencode_try_open(f"file:{db}?mode=ro")
+    if connection is not None:
+        return connection, "ok"
+
+    text = str(error or "").lower()
+    if "locked" in text or "busy" in text:
+        return None, "locked"
+    if "unable to open" in text or "readonly" in text or "read-only" in text:
+        connection, error = opencode_try_open(f"file:{db}?immutable=1")
+        if connection is not None:
+            return connection, "immutable"
+        text = str(error or "").lower()
+        if "locked" in text or "busy" in text:
+            return None, "locked"
+    return None, "error"
+
+
+def opencode_message_tables(connection: sqlite3.Connection) -> list[tuple[str, str]]:
+    """`(table, assistant filter)` for every message table this database has.
+
+    OpenCode 1.x keeps everything in `message` and marks the role inside the JSON
+    blob; 2.x adds `session_message` with an explicit `type` column. An upgraded
+    install has both, so both are read and merged. The `part` table holds the
+    message text and is never queried.
+
+    The 1.x filter is a cheap substring prefilter, not the decision: matching the
+    literal `"role":"assistant"` would depend on OpenCode's JSON spacing, so the
+    authoritative role check lives in `extract_opencode_row`.
+    """
+    try:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
+            ("message", "session_message"),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    present = {row[0] for row in rows}
+    tables: list[tuple[str, str]] = []
+    if "message" in present:
+        tables.append(("message", "data LIKE '%assistant%'"))
+    if "session_message" in present:
+        tables.append(("session_message", "type = 'assistant'"))
+    return tables
+
+
+def opencode_tokens_total(tokens: Any) -> int | None:
+    if not isinstance(tokens, dict):
+        return None
+    total = 0.0
+    seen = False
+    for key in ("input", "output", "reasoning"):
+        value = number_or_none(tokens.get(key))
+        if value is not None:
+            total += value
+            seen = True
+    cache = tokens.get("cache")
+    if isinstance(cache, dict):
+        for key in ("read", "write"):
+            value = number_or_none(cache.get(key))
+            if value is not None:
+                total += value
+                seen = True
+    if not seen:
+        return None
+    return max(0, int(total))
+
+
+def extract_opencode_row(data: Any) -> tuple[float, int] | None:
+    """`(ts, total_tokens)` for one assistant message blob.
+
+    Privacy: only `role`, `tokens.*` and `time.created` are read. Prompt and
+    response text lives in the `part` table (never queried) and in blob fields
+    such as `error.message` or `summary`, which are never touched. `time.created`
+    is preferred over `time.completed` because it stays stable while the row is
+    rewritten during streaming.
+    """
+    if not isinstance(data, str):
+        return None
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or payload.get("role") != "assistant":
+        return None
+
+    total = opencode_tokens_total(payload.get("tokens"))
+    if total is None:
+        return None
+
+    time_payload = payload.get("time") if isinstance(payload.get("time"), dict) else {}
+    created = number_or_none(time_payload.get("created"))
+    if created is None:
+        return None
+    # OpenCode stores millisecond epochs.
+    return created / 1000.0, total
+
+
+def empty_opencode_cache(db: Path | None) -> dict[str, Any]:
+    return {
+        "schema_version": OPENCODE_CACHE_SCHEMA_VERSION,
+        "db": str(db) if db is not None else "",
+        "hwm": 0,
+        "rows": {},
+    }
+
+
+def load_opencode_cache(cache_file: Path, db: Path | None) -> dict[str, Any]:
+    try:
+        with cache_file.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return empty_opencode_cache(db)
+    if not isinstance(payload, dict):
+        return empty_opencode_cache(db)
+    if payload.get("schema_version") != OPENCODE_CACHE_SCHEMA_VERSION:
+        return empty_opencode_cache(db)
+    if not isinstance(payload.get("rows"), dict):
+        return empty_opencode_cache(db)
+
+    if db is not None and payload.get("db") != str(db):
+        # A different database file: its `time_updated` watermark says nothing
+        # about this one, so rescan from the start. Already-known rows are kept
+        # because the cache is a ledger and history must not shrink.
+        payload["hwm"] = 0
+        payload["db"] = str(db)
+    payload["hwm"] = int(number_or_none(payload.get("hwm")) or 0)
+    return payload
+
+
+def opencode_events_from_rows(rows: dict[str, Any]) -> list[TokenEvent]:
+    events: list[TokenEvent] = []
+    seen: set[tuple[float, int]] = set()
+    for value in rows.values():
+        if not isinstance(value, list) or len(value) < 2:
+            continue
+        ts = number_or_none(value[0])
+        total = number_or_none(value[1])
+        if ts is None or total is None:
+            continue
+        key = (ts, int(total))
+        if OPENCODE_COLLAPSE_DUPLICATE_ROWS:
+            # A forked session copies its parent's messages under new ids; an
+            # exact (timestamp, total) match is a replay, not a second turn.
+            if key in seen:
+                continue
+            seen.add(key)
+        events.append(TokenEvent(ts=ts, total_tokens=max(0, int(total)), session_ts=0.0))
+    return events
+
+
+def collect_opencode_events(
+    root: Path,
+    cache_file: Path,
+    use_cache: bool,
+) -> tuple[list[TokenEvent], dict[str, int]]:
+    """Read assistant token counts from the OpenCode SQLite database.
+
+    `cache-opencode.json` is an incremental ledger: rows are keyed by message id
+    and only rows newer than the stored `time_updated` watermark are fetched.
+    Rows are never removed, so history survives OpenCode pruning its sessions.
+    """
+    stats: dict[str, Any] = {
+        "files_scanned": 0,
+        "files_parsed": 0,
+        "malformed_lines": 0,
+        "files_retained": 0,
+        "opencode_rows_scanned": 0,
+        "opencode_rows_cached": 0,
+        "opencode_db_status": "missing",
+        "source_ok": 1,
+        "source_message": "",
+    }
+
+    db = resolve_opencode_db(root)
+    cache = load_opencode_cache(cache_file, db) if use_cache else empty_opencode_cache(db)
+    rows: dict[str, Any] = cache.setdefault("rows", {})
+
+    if db is None:
+        stats["source_ok"] = 0
+        stats["source_message"] = f"OpenCode database not found: {root / OPENCODE_DB_CANDIDATES[0]}"
+        stats["opencode_rows_cached"] = len(rows)
+        return opencode_events_from_rows(rows), stats
+
+    stats["files_scanned"] = 1
+    connection, status = open_opencode_db(db)
+    stats["opencode_db_status"] = status
+    if connection is None:
+        stats["opencode_rows_cached"] = len(rows)
+        if status == "locked":
+            stats["source_message"] = "OpenCode database busy; showing cached usage"
+        else:
+            stats["source_ok"] = 0
+            stats["source_message"] = f"OpenCode database unreadable: {db}"
+        return opencode_events_from_rows(rows), stats
+
+    hwm = int(cache.get("hwm") or 0) if use_cache else 0
+    new_hwm = hwm
+    try:
+        for table, assistant_filter in opencode_message_tables(connection):
+            # Table name and filter are module constants, never user input.
+            cursor = connection.execute(
+                f"SELECT id, time_updated, data FROM {table} WHERE time_updated >= ? AND {assistant_filter}",
+                (hwm,),
+            )
+            for row_id, time_updated, data in cursor:
+                stats["opencode_rows_scanned"] += 1
+                updated = int(number_or_none(time_updated) or 0)
+                if updated > new_hwm:
+                    new_hwm = updated
+                extracted = extract_opencode_row(data)
+                if extracted is None:
+                    continue
+                # Streaming rewrites the same id repeatedly; the last write wins.
+                rows[str(row_id)] = [extracted[0], extracted[1]]
+        stats["files_parsed"] = 1
+        cache["hwm"] = new_hwm
+        cache["db"] = str(db)
+    except sqlite3.Error as error:
+        # Serve what the ledger already has and leave the watermark alone so the
+        # skipped rows are retried next refresh. A busy database is transient, so
+        # it stays a healthy status; anything else (a schema change, corruption)
+        # is a real failure and must be reported instead of masked as "busy".
+        text = str(error).lower()
+        if "locked" in text or "busy" in text:
+            stats["opencode_db_status"] = "locked"
+            stats["source_message"] = "OpenCode database busy; showing cached usage"
+        else:
+            stats["opencode_db_status"] = "error"
+            stats["source_ok"] = 0
+            stats["source_message"] = f"OpenCode database unreadable: {db}"
+    finally:
+        connection.close()
+
+    stats["opencode_rows_cached"] = len(rows)
+    if use_cache:
+        save_cache(cache_file, cache)
+    return opencode_events_from_rows(rows), stats
+
+
+def opencode_source(
+    root: Path,
+    cache_file: Path,
+    use_cache: bool,
+) -> tuple[list[TokenEvent], dict[str, int], dict[str, LimitSnapshot]]:
+    # OpenCode stores no rate-limit data locally, so there are no gauges.
+    events, stats = collect_opencode_events(root, cache_file, use_cache)
+    return events, stats, {}
+
+
 def start_of_month(value: datetime) -> datetime:
     return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -1368,6 +1899,14 @@ def aggregate(
     elif stats["malformed_lines"]:
         message = f"Skipped {stats['malformed_lines']} malformed JSONL line(s)"
 
+    # A provider whose source is a database rather than a log tree reports its own
+    # reachability; an explanatory message wins over the generic malformed count.
+    if stats.get("source_ok", 1) == 0:
+        ok = False
+    source_message = str(stats.get("source_message") or "")
+    if source_message:
+        message = source_message
+
     primary_snapshot = select_limit_snapshot(limit_events, "primary", now)
     secondary_snapshot = select_limit_snapshot(limit_events, "secondary", now)
     live_limits = live_limits or {}
@@ -1402,6 +1941,10 @@ def aggregate(
             "claude_online_requests": stats.get("claude_online_requests", 0),
             "claude_online_snapshots": stats.get("claude_online_snapshots", 0),
             "claude_online_status": stats.get("claude_online_status", ""),
+            "grok_limit_snapshots": stats.get("grok_limit_snapshots", 0),
+            "opencode_rows_scanned": stats.get("opencode_rows_scanned", 0),
+            "opencode_rows_cached": stats.get("opencode_rows_cached", 0),
+            "opencode_db_status": stats.get("opencode_db_status", ""),
         },
         "today": {
             "total_tokens": sum(hourly),
@@ -1513,6 +2056,10 @@ def build_payload(
             online_opener=claude_online_opener,
             cowork_root=cowork_root,
         )
+    elif provider == "grok":
+        events, stats, live_limits = grok_source(log_root, cache_file, use_cache, now)
+    elif provider == "opencode":
+        events, stats, live_limits = opencode_source(log_root, cache_file, use_cache)
     else:
         events, stats, live_limits = codex_source(
             log_root, cache_file, use_cache, now, local_tz, live_log_db, use_account_limits, codex_bin
@@ -1528,14 +2075,14 @@ def main() -> int:
     if args.log_root is not None:
         log_root = Path(args.log_root).expanduser()
     else:
-        log_root = DEFAULT_CLAUDE_LOG_ROOT if provider == "claude" else DEFAULT_LOG_ROOT
+        log_root = PROVIDER_DEFAULT_ROOTS.get(provider, DEFAULT_LOG_ROOT)
 
     if args.cache_file is not None:
         cache_file = Path(args.cache_file).expanduser()
-    elif provider == "claude":
-        cache_file = DEFAULT_CACHE_FILE.with_name("cache-claude.json")
-    else:
+    elif provider == "codex":
         cache_file = DEFAULT_CACHE_FILE
+    else:
+        cache_file = DEFAULT_CACHE_FILE.with_name(f"cache-{provider}.json")
 
     if provider == "claude":
         limits_file = Path(args.limits_file).expanduser() if args.limits_file else DEFAULT_CLAUDE_LIMITS_FILE
@@ -1566,6 +2113,8 @@ def main() -> int:
             claude_online_cache=online_cache,
             cowork_root=cowork_root,
         )
+    elif provider in ("grok", "opencode"):
+        payload = build_payload(log_root, cache_file, not args.no_cache, now, provider=provider)
     else:
         live_log_db = None if args.no_live_limits else Path(args.live_log_db).expanduser()
         use_account_limits = not args.no_live_limits and not args.no_account_limits

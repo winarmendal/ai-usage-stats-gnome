@@ -4,49 +4,37 @@
     <key name="refresh-interval" type="i">
       <default>60</default>
       <summary>Refresh interval in seconds</summary>
-      <description>How often Codex Stats refreshes local Codex usage data.</description>
+      <description>How often AI Usage Stats refreshes local usage data.</description>
     </key>
     <key name="log-root" type="s">
       <default>'~/.codex/sessions'</default>
       <summary>Codex session log root</summary>
       <description>Directory containing local Codex JSONL session logs.</description>
     </key>
-    <key name="show-day" type="b">
-      <default>true</default>
-      <summary>Show daily token burn in the panel</summary>
-    </key>
-    <key name="show-primary" type="b">
-      <default>true</default>
-      <summary>Show short-window remaining usage in the panel</summary>
-    </key>
-    <key name="show-secondary" type="b">
-      <default>true</default>
-      <summary>Show weekly remaining usage in the panel</summary>
-    </key>
     <key name="panel-show-usage" type="b">
       <default>false</default>
       <summary>Show usage next to the panel icon</summary>
-      <description>When enabled, the top bar shows compact 5h and weekly remaining percentages next to the icon.</description>
+      <description>When enabled, the top bar shows the compact gauges of the top bar provider next to the icon.</description>
     </key>
     <key name="cache-enabled" type="b">
       <default>true</default>
       <summary>Enable helper cache</summary>
-      <description>Store parsed token_count metadata in the user cache directory for faster refreshes.</description>
+      <description>Store parsed token metadata in the user cache directory for faster refreshes.</description>
     </key>
     <key name="account-limits-enabled" type="b">
       <default>true</default>
       <summary>Use realtime Codex account limits</summary>
       <description>Ask the local Codex CLI for the current account rate-limit snapshot when available.</description>
     </key>
-    <key name="active-provider" type="s">
-      <default>'codex'</default>
-      <summary>Active usage provider</summary>
-      <description>Which provider's usage is shown in the panel and popover (codex or claude).</description>
+    <key name="panel-provider" type="s">
+      <default>''</default>
+      <summary>Top bar provider</summary>
+      <description>Which provider's gauges the top bar shows (codex, claude, grok or opencode). Empty means no provider has been picked yet and the panel shows a placeholder.</description>
     </key>
     <key name="claude-enabled" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Track Claude Code usage</summary>
-      <description>Show Claude Code as a selectable provider. Token usage is read locally; live 5h/weekly limits require the statusLine capture.</description>
+      <description>Show Claude Code in the popover when its sessions root exists. Token usage is read locally; live 5h/weekly limits require the statusLine capture.</description>
     </key>
     <key name="claude-log-root" type="s">
       <default>'~/.claude/projects'</default>
@@ -62,6 +50,26 @@
       <default>false</default>
       <summary>Fetch live Claude limits online</summary>
       <description>Opt-in. When enabled, the helper makes a network request to the Anthropic usage API using your local Claude login token to read live 5h/weekly and per-model (Fable/Opus) limits. Off by default to keep the extension fully local. Only numeric usage metadata is read.</description>
+    </key>
+    <key name="grok-enabled" type="b">
+      <default>true</default>
+      <summary>Track Grok usage</summary>
+      <description>Show Grok Build in the popover when its home directory exists. Per-turn token counts and the weekly credit percentage are read locally.</description>
+    </key>
+    <key name="grok-log-root" type="s">
+      <default>'~/.grok'</default>
+      <summary>Grok home directory</summary>
+      <description>Directory containing local Grok Build session usage files and the unified log.</description>
+    </key>
+    <key name="opencode-enabled" type="b">
+      <default>true</default>
+      <summary>Track OpenCode usage</summary>
+      <description>Show OpenCode in the popover when its data directory exists. Only numeric token counts are read from the local database.</description>
+    </key>
+    <key name="opencode-log-root" type="s">
+      <default>'~/.local/share/opencode'</default>
+      <summary>OpenCode data directory</summary>
+      <description>Directory containing the local OpenCode SQLite database.</description>
     </key>
   </schema>
 </schemalist>

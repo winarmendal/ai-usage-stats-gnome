@@ -5,6 +5,8 @@ import Adw from 'gi://Adw';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {PROVIDERS, expandHome} from './providers.js';
+
 const WRAPPER_MARKER = 'claude_statusline_capture.py';
 
 // Source/install.sh layout keeps the wrapper under helper/; `gnome-extensions
@@ -15,14 +17,6 @@ function resolveWrapperPath(extensionPath) {
     if (GLib.file_test(nested, GLib.FileTest.EXISTS))
         return nested;
     return GLib.build_filenamev([extensionPath, WRAPPER_MARKER]);
-}
-
-function expandHome(path) {
-    if (path === '~')
-        return GLib.get_home_dir();
-    if (path.startsWith('~/'))
-        return GLib.build_filenamev([GLib.get_home_dir(), path.slice(2)]);
-    return path;
 }
 
 function claudeSettingsPath() {
@@ -71,36 +65,44 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
         // --- Providers -------------------------------------------------------
         const providerGroup = new Adw.PreferencesGroup({
             title: _('Providers'),
-            description: _('Choose which assistant’s usage the panel shows.'),
+            description: _('The popover shows every tracked provider at once. Pick which one the top bar shows.'),
         });
         page.add(providerGroup);
 
-        const providerIds = ['codex', 'claude'];
-        const providerModel = new Gtk.StringList();
-        providerModel.append(_('Codex'));
-        providerModel.append(_('Claude'));
-        const providerRow = new Adw.ComboRow({
-            title: _('Active provider'),
-            subtitle: _('Shown in the top bar and popover.'),
-            model: providerModel,
+        // Index 0 is the "nothing picked yet" placeholder, so the top bar never
+        // claims to show a provider the user did not choose.
+        const panelProviderIds = ['', ...PROVIDERS.map(provider => provider.id)];
+        const panelProviderModel = new Gtk.StringList();
+        panelProviderModel.append(_('Not selected'));
+        // Provider labels are product names, so they are not run through gettext.
+        for (const provider of PROVIDERS)
+            panelProviderModel.append(provider.label);
+        const panelProviderRow = new Adw.ComboRow({
+            title: _('Top bar provider'),
+            subtitle: _('Whose gauges appear next to the panel icon.'),
+            model: panelProviderModel,
         });
-        providerRow.selected = Math.max(0, providerIds.indexOf(settings.get_string('active-provider')));
-        providerRow.connect('notify::selected', () => {
-            settings.set_string('active-provider', providerIds[providerRow.selected] || 'codex');
+        panelProviderRow.selected = Math.max(0, panelProviderIds.indexOf(settings.get_string('panel-provider')));
+        panelProviderRow.connect('notify::selected', () => {
+            settings.set_string('panel-provider', panelProviderIds[panelProviderRow.selected] || '');
         });
-        settings.connect('changed::active-provider', () => {
-            const index = providerIds.indexOf(settings.get_string('active-provider'));
-            if (index >= 0 && index !== providerRow.selected)
-                providerRow.selected = index;
+        settings.connect('changed::panel-provider', () => {
+            const index = panelProviderIds.indexOf(settings.get_string('panel-provider'));
+            if (index >= 0 && index !== panelProviderRow.selected)
+                panelProviderRow.selected = index;
         });
-        providerGroup.add(providerRow);
+        providerGroup.add(panelProviderRow);
 
-        const claudeEnabledRow = new Adw.SwitchRow({
-            title: _('Track Claude Code'),
-            subtitle: _('Add Claude as a selectable provider.'),
-        });
-        settings.bind('claude-enabled', claudeEnabledRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        providerGroup.add(claudeEnabledRow);
+        for (const provider of PROVIDERS) {
+            if (!provider.enabledKey)
+                continue;
+            const trackRow = new Adw.SwitchRow({
+                title: _('Track %s').format(provider.label),
+                subtitle: _('Shown when %s exists.').format(provider.defaultRoot),
+            });
+            settings.bind(provider.enabledKey, trackRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+            providerGroup.add(trackRow);
+        }
 
         // --- Claude ----------------------------------------------------------
         const claudeGroup = new Adw.PreferencesGroup({
@@ -213,6 +215,34 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
         settings.bind('account-limits-enabled', accountLimitsRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         dataGroup.add(accountLimitsRow);
 
+        // --- Grok ------------------------------------------------------------
+        const grokGroup = new Adw.PreferencesGroup({
+            title: _('Grok'),
+            description: _('Only per-turn token counts and the weekly credit percentage are read; prompt and chat files under this root are never opened.'),
+        });
+        page.add(grokGroup);
+
+        const grokRootRow = new Adw.EntryRow({
+            title: _('Grok home directory'),
+            text: settings.get_string('grok-log-root'),
+        });
+        grokRootRow.connect('changed', () => settings.set_string('grok-log-root', grokRootRow.get_text()));
+        grokGroup.add(grokRootRow);
+
+        // --- OpenCode --------------------------------------------------------
+        const openCodeGroup = new Adw.PreferencesGroup({
+            title: _('OpenCode'),
+            description: _('Only numeric token counts are read from the local OpenCode database; message text is never queried. OpenCode publishes no rate limits, so only token history is shown.'),
+        });
+        page.add(openCodeGroup);
+
+        const openCodeRootRow = new Adw.EntryRow({
+            title: _('OpenCode data directory'),
+            text: settings.get_string('opencode-log-root'),
+        });
+        openCodeRootRow.connect('changed', () => settings.set_string('opencode-log-root', openCodeRootRow.get_text()));
+        openCodeGroup.add(openCodeRootRow);
+
         const refreshGroup = new Adw.PreferencesGroup({
             title: _('Refresh'),
         });
@@ -239,7 +269,7 @@ export default class CodexStatsPreferences extends ExtensionPreferences {
 
         const panelUsageRow = new Adw.SwitchRow({
             title: _('Show usage next to icon'),
-            subtitle: _('Displays 5h and weekly remaining percentages in the top bar.'),
+            subtitle: _('Displays the top bar provider’s remaining percentages, or its token total when it has no rate limits.'),
         });
         settings.bind('panel-show-usage', panelUsageRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         panelGroup.add(panelUsageRow);

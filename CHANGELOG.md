@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Added **Grok Build** and **OpenCode** as new providers alongside Codex and Claude. Grok reads per-turn token counts from `~/.grok/sessions/**/usage.json` and a weekly credit percentage from `~/.grok/logs/unified.jsonl` (no 5-hour window exists for Grok). OpenCode reads assistant message token counts from its local SQLite database under `~/.local/share/opencode` (no rate-limit data exists on disk, so OpenCode shows a token total only). Both are local-first, read-only, and numeric-only, consistent with the existing privacy model (`docs/PRIVACY.md`). Both show up automatically once their data directory exists; "Track Grok" / "Track OpenCode" switches in Preferences can hide them.
+- Redesigned the popover: every enabled, present provider now shows in one list at once, with no tabs and no Day/Week/Month/3M switcher. More Stats now shows one 7-day token history list per provider in a single scroll area.
+- The top-bar provider is now chosen explicitly in Preferences → Providers → "Top bar provider", replacing the old `active-provider` auto-selection. The `active-provider` GSettings key is removed; the panel shows a placeholder ("Select provider") until a provider is picked. **Existing installs need to pick a top-bar provider once after upgrading** — the panel will otherwise stay on the placeholder.
+- `claude-enabled` now defaults to **true** (previously false); Claude Code shows up automatically like every other provider once its sessions directory exists, rather than requiring an opt-in switch first.
+- Added GNOME Shell 51 support. St 51 removed the `vertical` property from `St.BoxLayout`, which made the extension fail to load with "No property vertical on StBoxLayout". The popover now uses `orientation: Clutter.Orientation.VERTICAL`, which also works on GNOME Shell 50.
+- If `enable()` fails partway, the extension now cleans up its half-built panel button, signals and timers before reporting the error, instead of leaving them behind.
+- Bumped extension metadata to version 11.
+
 ## 0.5.0
 
 - Token history no longer shrinks when source files disappear. Claude Code deletes transcripts older than `cleanupPeriodDays` (30 days by default), which silently erased older days from the monthly totals. The per-provider cache now acts as a ledger: an entry whose JSONL file is gone is kept (flagged `missing`) and keeps contributing to history, for both Claude and Codex. If the file reappears unchanged the flag clears; if it changed it is re-parsed as usual. Only `--no-cache` and `uninstall.sh --purge-cache` drop retained history. Days already deleted before this release cannot be recovered.

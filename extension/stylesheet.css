@@ -11,6 +11,11 @@
     font-weight: bold;
 }
 
+.codex-stats-panel-label-placeholder {
+    font-weight: normal;
+    opacity: 0.6;
+}
+
 .codex-stats-panel-icon {
     icon-size: 14px;
 }
@@ -53,6 +58,39 @@
     spacing: 6px;
 }
 
+.codex-stats-provider {
+    spacing: 4px;
+    padding-bottom: 4px;
+}
+
+.codex-stats-provider-divider {
+    border-top: 1px solid rgba(128, 128, 128, 0.22);
+    margin-top: 4px;
+    padding-top: 8px;
+}
+
+.codex-stats-provider-header {
+    spacing: 8px;
+    min-height: 22px;
+}
+
+.codex-stats-provider-icon {
+    icon-size: 16px;
+}
+
+.codex-stats-provider-name {
+    font-weight: bold;
+}
+
+.codex-stats-provider-today-label {
+    font-size: 0.85em;
+    opacity: 0.68;
+}
+
+.codex-stats-provider-today-value {
+    font-weight: bold;
+}
+
 .codex-stats-metric-row {
     spacing: 8px;
     min-height: 20px;
@@ -91,31 +129,7 @@
     opacity: 0.68;
 }
 
-.codex-stats-tabs {
-    padding: 0 12px 8px;
-    spacing: 6px;
-}
-
-.codex-stats-tab {
-    min-width: 44px;
-    padding: 5px 10px;
-    border-radius: 6px;
-}
-
-.codex-stats-tab-active {
-    background-color: -st-accent-color;
-    color: -st-accent-fg-color;
-    font-weight: bold;
-}
-
-.codex-stats-tab-active:focus,
-.codex-stats-tab-active:active,
-.codex-stats-tab-active:hover {
-    background-color: -st-accent-color;
-    color: -st-accent-fg-color;
-}
-
-.codex-stats-content {
+.codex-stats-history {
     padding: 0 12px 12px;
     spacing: 5px;
 }
@@ -125,7 +139,7 @@
     margin-bottom: 4px;
 }
 
-.codex-stats-series-scroll {
+.codex-stats-history-scroll {
     min-height: 72px;
 }
 

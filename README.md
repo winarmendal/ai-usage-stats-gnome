@@ -2,34 +2,34 @@
 
 ![CI](https://github.com/winarmendal/ai-usage-stats-gnome/actions/workflows/ci.yml/badge.svg)
 
-AI Usage Stats is a local-first GNOME Shell extension that shows Codex and Claude (Claude Code + Claude Cowork) token usage and rate-limit percentages in the top bar.
+AI Usage Stats is a local-first GNOME Shell extension that shows Codex, Claude (Claude Code + Claude Cowork), Grok Build, and OpenCode token usage and rate-limit percentages in the top bar.
 
-For Codex it reads `token_count` metadata events from local JSONL session logs under `~/.codex/sessions`, uses local `codex.rate_limits` metadata from `~/.codex/logs_2.sqlite`, and can ask the local Codex CLI for the current account rate-limit snapshot for fresher 5-hour and weekly percentages. For Claude it reads `assistant` events from local JSONL transcripts under `~/.claude/projects`, folds in **Claude Cowork** (agent-mode) usage from `~/.config/Claude/local-agent-mode-sessions/**/audit.jsonl` so the Claude figure reflects Claude Code + Cowork combined, and uses an opt-in statusLine capture wrapper for 5-hour and weekly rate-limit percentages. An optional, off-by-default online mode can additionally read live 5-hour/weekly and per-model (Fable/Opus) limits directly from your own Anthropic account. Neither provider's prompts, assistant messages, file contents, browser data, or cookies are parsed or displayed; the opt-in online mode reads your local Claude login token read-only, solely to authenticate that one request (see `docs/PRIVACY.md`).
+For Codex it reads `token_count` metadata events from local JSONL session logs under `~/.codex/sessions`, uses local `codex.rate_limits` metadata from `~/.codex/logs_2.sqlite`, and can ask the local Codex CLI for the current account rate-limit snapshot for fresher 5-hour and weekly percentages. For Claude it reads `assistant` events from local JSONL transcripts under `~/.claude/projects`, folds in **Claude Cowork** (agent-mode) usage from `~/.config/Claude/local-agent-mode-sessions/**/audit.jsonl` so the Claude figure reflects Claude Code + Cowork combined, and uses an opt-in statusLine capture wrapper for 5-hour and weekly rate-limit percentages. An optional, off-by-default online mode can additionally read live 5-hour/weekly and per-model (Fable/Opus) limits directly from your own Anthropic account. For Grok Build it reads per-turn token counts from `~/.grok/sessions/**/usage.json` and the weekly credit percentage from the tail of `~/.grok/logs/unified.jsonl` (billing lines only; no 5-hour window exists). For OpenCode it reads assistant message token counts from the local `~/.local/share/opencode` SQLite database (numeric `tokens.*` fields only; no rate-limit data exists on disk). No provider's prompts, assistant messages, file contents, browser data, or cookies are parsed or displayed; the opt-in Claude online mode reads your local Claude login token read-only, solely to authenticate that one request (see `docs/PRIVACY.md`).
 
 ## Features
 
-- Top-bar icon with active-provider label, optional compact usage: `5h 99%  Week 60%`
-- Provider selector (Codex / Claude) at the top of the popover when Claude tracking is enabled; choice persists across sessions
+- Top-bar icon and label for one explicitly chosen provider (Preferences → Providers → "Top bar provider"); until a provider is picked, the panel shows a placeholder
+- Popover lists every enabled, present provider at once — no tabs. Each provider gets its own block with today's tokens and its rate-limit gauges (Codex: freshest 5h/Week; Claude: 5h/Week plus an optional Fable row; Grok: Week only; OpenCode: tokens only, no gauges)
+- Providers show up automatically once their data folder exists (Grok: `~/.grok`, OpenCode: `~/.local/share/opencode`); a "Track <Provider>" switch in Preferences can still hide one
 - Claude usage includes **Claude Cowork** (agent mode): Cowork token counts fold into the Claude totals automatically (only `audit.jsonl` ledgers are read; nested transcripts are never opened)
-- Bundled panel icon, so CLI-only users do not need the Codex or Claude desktop app icon installed
+- Bundled panel icons for all four providers, so CLI-only users do not need any provider's desktop app icon installed
 - Theme-aware GNOME Shell styling for light and dark mode
-- Click popover with today, 5-hour remaining, and weekly remaining stats for the active provider
-- Collapsed More Stats section with Day, Week, Month, and 3M token history views
-- Preferences for refresh interval, log roots, realtime account limits, compact panel usage, cache usage, and Claude provider toggle
+- Collapsed More Stats section with one 7-day token history list per visible provider, in a single scroll area
+- Preferences for refresh interval, per-provider log/data roots, realtime account limits, compact panel usage, cache usage, and per-provider tracking toggles
 - Opt-in Claude statusLine capture wrapper (installed from Preferences → Claude → Install) that supplies 5-hour and weekly rate-limit data; Claude's gauges show `--` until it is installed
 - Optional online live limits (Preferences → Claude, off by default): fetches live 5-hour/weekly and per-model Fable/Opus limits from your Anthropic account, fresh even with no Claude session open; see `docs/PRIVACY.md`
-- Python stdlib helper with cache-aware JSONL parsing and realtime rate-limit metadata
-- Privacy-focused model that displays only token and rate-limit metadata, for both providers
+- Python stdlib helper with cache-aware JSONL/SQLite parsing and realtime rate-limit metadata
+- Privacy-focused model that displays only token and rate-limit metadata, for every provider
 
 ## Requirements
 
-- GNOME Shell 50
-- GJS 1.88 or compatible GNOME 50 runtime
+- GNOME Shell 50 or 51
+- GJS 1.88+ (GNOME 50) or 1.90 (GNOME 51)
 - Python 3.10+
 - `glib-compile-schemas`
 - `gnome-extensions`
 
-This project is currently built and tested for GNOME Shell 50. Wider shell-version support should be validated before changing `metadata.json`.
+This project is currently built and tested for GNOME Shell 50 and 51. Wider shell-version support should be validated before changing `metadata.json`.
 
 ## Install From GitHub Release
 
@@ -96,6 +96,18 @@ Check current local Claude stats:
 
 ```bash
 ./helper/codex_stats_helper.py --provider claude --json | python -m json.tool
+```
+
+Check current local Grok Build stats:
+
+```bash
+./helper/codex_stats_helper.py --provider grok --json | python -m json.tool
+```
+
+Check current local OpenCode stats:
+
+```bash
+./helper/codex_stats_helper.py --provider opencode --json | python -m json.tool
 ```
 
 ## Uninstall

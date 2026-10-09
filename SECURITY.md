@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-The current public version targets GNOME Shell 50.
+The current public version targets GNOME Shell 50 and 51.
 
 ## Reporting A Vulnerability
 
