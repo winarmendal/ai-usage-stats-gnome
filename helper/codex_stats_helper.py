@@ -84,8 +84,8 @@ PROVIDER_DEFAULT_ROOTS = {
     "opencode": DEFAULT_OPENCODE_ROOT,
 }
 
-# datetime.fromisoformat rejects more than 6 fractional digits on Python 3.10,
-# and Grok writes 9.
+# datetime.fromisoformat on Python 3.10 accepts only 3 or 6 fractional digits;
+# Grok writes 9, and other RFC3339 writers may emit 1 or 2.
 RFC3339_FRACTION_RE = re.compile(r"\.\d+")
 
 
@@ -154,15 +154,17 @@ def parse_rfc3339_ts(value: Any, local_tz: timezone | None = None) -> float | No
     """Epoch seconds for an RFC3339 timestamp, tolerating >6 fractional digits.
 
     Grok writes nanosecond precision (`2026-09-14T14:29:18.082965175+00:00`),
-    which `datetime.fromisoformat` rejects on Python 3.10, so the fraction is
-    truncated to microseconds first. A naive value is read in `local_tz`
-    (UTC when not given), matching `parse_datetime`.
+    and `datetime.fromisoformat` on Python 3.10 accepts only 3 or 6 fractional
+    digits, so the fraction is truncated or zero-padded to microseconds first.
+    A naive value is read in `local_tz` (UTC when not given), matching
+    `parse_datetime`.
     """
     if not isinstance(value, str) or not value:
         return None
     match = RFC3339_FRACTION_RE.search(value)
-    if match is not None and match.end() - match.start() > 7:
-        value = value[: match.start() + 7] + value[match.end() :]
+    if match is not None:
+        digits = match.group()[1:7].ljust(6, "0")
+        value = f"{value[: match.start()]}.{digits}{value[match.end() :]}"
     parsed = parse_datetime(value, local_tz or timezone.utc)
     if parsed is None:
         return None
