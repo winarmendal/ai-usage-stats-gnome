@@ -10,7 +10,7 @@ The extension lives in `extension/` and uses GNOME Shell ES modules:
 - `PanelMenu.Button` renders the top-bar indicator, labelled with whichever provider is picked as the top-bar provider (empty until chosen).
 - `PopupMenu` and `St` widgets render the popover: one block per currently visible provider (icon, name, today's tokens, its gauges), stacked with dividers — no tabs.
 - `Gio.Settings` stores refresh interval, per-provider log/data roots, panel toggles, cache usage, and the top-bar provider choice. Keys: `panel-provider` (replaces the old `active-provider`), `claude-enabled` (default true), `claude-log-root` (default `~/.claude/projects`), `claude-limits-file` (default `~/.cache/codex-stats/claude-limits.json`), `claude-online-usage` (opt-in online live limits, default off), `grok-enabled` (default true), `grok-log-root` (default `~/.grok`), `opencode-enabled` (default true), `opencode-log-root` (default `~/.local/share/opencode`).
-- `GLib.Subprocess` runs the helper asynchronously so JSONL/SQLite parsing does not block GNOME Shell.
+- `Gio.Subprocess` runs the helper asynchronously so JSONL/SQLite parsing does not block GNOME Shell.
 
 The extension refreshes every 60 seconds by default.
 
