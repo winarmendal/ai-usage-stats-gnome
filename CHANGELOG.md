@@ -6,6 +6,8 @@
 - Redesigned the popover: every enabled, present provider now shows in one list at once, with no tabs and no Day/Week/Month/3M switcher. More Stats now shows one 7-day token history list per provider in a single scroll area.
 - The top-bar provider is now chosen explicitly in Preferences → Providers → "Top bar provider", replacing the old `active-provider` auto-selection. The `active-provider` GSettings key is removed; the panel shows a placeholder ("Select provider") until a provider is picked. **Existing installs need to pick a top-bar provider once after upgrading** — the panel will otherwise stay on the placeholder.
 - `claude-enabled` now defaults to **true** (previously false); Claude Code shows up automatically like every other provider once its sessions directory exists, rather than requiring an opt-in switch first.
+- Added GNOME Shell 51 support. St 51 removed the `vertical` property from `St.BoxLayout`, which made the extension fail to load with "No property vertical on StBoxLayout". The popover now uses `orientation: Clutter.Orientation.VERTICAL`, which also works on GNOME Shell 50.
+- If `enable()` fails partway, the extension now cleans up its half-built panel button, signals and timers before reporting the error, instead of leaving them behind.
 - Bumped extension metadata to version 11.
 
 ## 0.5.0

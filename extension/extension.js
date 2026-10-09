@@ -54,43 +54,54 @@ export default class CodexStatsExtension extends Extension {
         this._panelIconKey = null;
         this._cancellable = new Gio.Cancellable();
 
-        this._resolveVisibleProviders();
+        try {
+            this._resolveVisibleProviders();
 
-        this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
-        this._indicator.add_style_class_name('codex-stats-panel-button');
+            this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
+            this._indicator.add_style_class_name('codex-stats-panel-button');
 
-        this._panelBox = new St.BoxLayout({
-            style_class: 'codex-stats-panel-box',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._panelIcon = new St.Icon({
-            icon_size: 14,
-            style_class: 'codex-stats-panel-icon',
-        });
-        this._panelLabel = new St.Label({
-            text: '--',
-            style_class: 'codex-stats-panel-label',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._panelBox.add_child(this._panelIcon);
-        this._panelBox.add_child(this._panelLabel);
-        this._indicator.add_child(this._panelBox);
-        this._updatePanelIcon();
+            this._panelBox = new St.BoxLayout({
+                style_class: 'codex-stats-panel-box',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            this._panelIcon = new St.Icon({
+                icon_size: 14,
+                style_class: 'codex-stats-panel-icon',
+            });
+            this._panelLabel = new St.Label({
+                text: '--',
+                style_class: 'codex-stats-panel-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            this._panelBox.add_child(this._panelIcon);
+            this._panelBox.add_child(this._panelLabel);
+            this._indicator.add_child(this._panelBox);
+            this._updatePanelIcon();
 
-        this._indicator.menu.box.add_style_class_name('codex-stats-popup');
-        this._buildMenu();
-        Main.panel.addToStatusArea(this.uuid, this._indicator);
+            this._indicator.menu.box.add_style_class_name('codex-stats-popup');
+            this._buildMenu();
+            Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-        this._signals.push(this._settings.connect('changed::panel-provider', () => this._updatePanel()));
-        for (const key of PROVIDER_KEYS)
-            this._signals.push(this._settings.connect(`changed::${key}`, () => this._onProviderChanged()));
-        for (const key of REFRESH_KEYS)
-            this._signals.push(this._settings.connect(`changed::${key}`, () => this._onSettingsChanged()));
-        this._connectThemeSignal(this._interfaceSettings, 'changed::color-scheme');
-        this._connectThemeSignal(this._interfaceSettings, 'changed::gtk-theme');
-        this._connectThemeSignal(this._userThemeSettings, 'changed::name');
+            this._signals.push(this._settings.connect('changed::panel-provider', () => this._updatePanel()));
+            for (const key of PROVIDER_KEYS)
+                this._signals.push(this._settings.connect(`changed::${key}`, () => this._onProviderChanged()));
+            for (const key of REFRESH_KEYS)
+                this._signals.push(this._settings.connect(`changed::${key}`, () => this._onSettingsChanged()));
+            this._connectThemeSignal(this._interfaceSettings, 'changed::color-scheme');
+            this._connectThemeSignal(this._interfaceSettings, 'changed::gtk-theme');
+            this._connectThemeSignal(this._userThemeSettings, 'changed::name');
 
-        this._onSettingsChanged();
+            this._onSettingsChanged();
+        } catch (e) {
+            // GNOME Shell does not call disable() when enable() throws, so tear
+            // down the half-built indicator, signals and cancellable here.
+            try {
+                this.disable();
+            } catch (cleanupError) {
+                logError(cleanupError);
+            }
+            throw e;
+        }
     }
 
     disable() {
@@ -205,7 +216,7 @@ export default class CodexStatsExtension extends Extension {
             x_expand: true,
         });
         const titleBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
         });
         this._titleLabel = new St.Label({
@@ -235,7 +246,7 @@ export default class CodexStatsExtension extends Extension {
 
         this._summaryBox = new St.BoxLayout({
             style_class: 'codex-stats-summary',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
         });
         this._indicator.menu.box.add_child(this._summaryBox);
 
@@ -281,7 +292,7 @@ export default class CodexStatsExtension extends Extension {
         });
         this._historyBox = new St.BoxLayout({
             style_class: 'codex-stats-history',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
         });
         this._historyScroll.set_child(this._historyBox);
@@ -690,7 +701,7 @@ export default class CodexStatsExtension extends Extension {
             style_class: divider
                 ? 'codex-stats-provider codex-stats-provider-divider'
                 : 'codex-stats-provider',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
         });
 
@@ -784,7 +795,7 @@ export default class CodexStatsExtension extends Extension {
         const max = Math.max(1, ...rows.map(row => row.value || 0));
         const seriesBox = new St.BoxLayout({
             style_class: 'codex-stats-series',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
         });
         target.add_child(seriesBox);

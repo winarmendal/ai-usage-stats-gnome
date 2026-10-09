@@ -22,5 +22,5 @@ This runs helper unit tests, validates the GSettings schema, checks live helper 
 
 ## Compatibility
 
-V1 targets GNOME Shell 50. If you broaden `shell-version`, test on that GNOME Shell version before submitting the change.
+The extension targets GNOME Shell 50 and 51. If you broaden `shell-version`, test on that GNOME Shell version before submitting the change.
 

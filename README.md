@@ -23,13 +23,13 @@ For Codex it reads `token_count` metadata events from local JSONL session logs u
 
 ## Requirements
 
-- GNOME Shell 50
-- GJS 1.88 or compatible GNOME 50 runtime
+- GNOME Shell 50 or 51
+- GJS 1.88+ (GNOME 50) or 1.90 (GNOME 51)
 - Python 3.10+
 - `glib-compile-schemas`
 - `gnome-extensions`
 
-This project is currently built and tested for GNOME Shell 50. Wider shell-version support should be validated before changing `metadata.json`.
+This project is currently built and tested for GNOME Shell 50 and 51. Wider shell-version support should be validated before changing `metadata.json`.
 
 ## Install From GitHub Release
 
