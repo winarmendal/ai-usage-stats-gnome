@@ -52,9 +52,11 @@ def capture_file(rate_limits: dict, captured_at: float) -> dict:
 
 
 def rate_limits(five: float = 11.0, seven: float = 31.0) -> dict:
+    # Resets fall inside the windows open at the tests' 2026-06-25T12:00+07:00 now;
+    # an already-passed reset would roll the gauge to 0% used.
     return {
-        "five_hour": {"used_percentage": five, "resets_at": 1781000000},
-        "seven_day": {"used_percentage": seven, "resets_at": 1781400000},
+        "five_hour": {"used_percentage": five, "resets_at": 1782370000},
+        "seven_day": {"used_percentage": seven, "resets_at": 1782800000},
     }
 
 
@@ -544,6 +546,35 @@ class ClaudeOnlineTests(unittest.TestCase):
             self.assertEqual(snaps["primary"].used_percent, 20.0)  # served from cache
             disk = json.loads(ocache.read_text())
             self.assertGreater(disk["backoff_until"], now_ts)
+
+    def test_online_backoff_past_reset_rolls_used_to_zero(self) -> None:
+        # Last good fetch at 21:44 WIB, 5h window reset at 21:50, endpoint has been
+        # 429ing since. At 22:29 the served cache must not carry the old window's
+        # 67% into the new window: the rolled 5h gauge reads 0% used.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"; root.mkdir(parents=True)
+            cache = Path(tmp) / "cache.json"
+            ocache = Path(tmp) / "online.json"
+            creds = Path(tmp) / ".credentials.json"
+            now = "2026-10-24T22:29:00+07:00"
+            now_ts = helper.parse_now(now).timestamp()
+            self.write_creds(creds, now_ts)
+            fetched_at = helper.parse_now("2026-10-24T21:44:42+07:00").timestamp()
+            ocache.write_text(json.dumps({
+                "fetched_at": fetched_at,
+                "data": {
+                    "five_hour": {"utilization": 67.0, "resets_at": "2026-10-24T14:50:00.747814+00:00"},
+                    "seven_day": {"utilization": 65.0, "resets_at": "2026-10-25T03:00:00.747834+00:00"},
+                },
+                "backoff_until": now_ts + 120,
+            }))
+            payload = self.build_online(root, cache, now, creds, _raise_opener, ocache)
+            primary = payload["limits"]["primary"]
+            self.assertEqual(payload["status"]["claude_online_status"], "backoff")
+            self.assertEqual(primary["used_percent"], 0.0)
+            self.assertEqual(primary["resets_at"], "2026-10-25T02:50:00.747814+07:00")
+            # The weekly window has not reset yet, so its cached value still stands.
+            self.assertEqual(payload["limits"]["secondary"]["used_percent"], 65.0)
 
     def test_online_cache_is_numeric_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1794,13 +1794,20 @@ def merge_live_limit_snapshot(
     resets_at = live_snapshot.resets_at
     if resets_at is None and jsonl_snapshot is not None:
         resets_at = jsonl_snapshot.resets_at
+    # A snapshot observed before its window reset describes the old window. Once
+    # that reset has passed (e.g. the online source is serving its last good fetch
+    # through a 429 backoff), roll to the new window at 0% used, mirroring
+    # select_limit_snapshot's expired-window rule.
+    used_percent = live_snapshot.used_percent
+    if resets_at is not None and resets_at <= now_ts and used_percent is not None:
+        used_percent = 0.0
     resets_at = roll_reset_forward(resets_at, window, now_ts)
 
     session_ts = jsonl_snapshot.session_ts if jsonl_snapshot is not None else live_snapshot.session_ts
     return LimitSnapshot(
         ts=live_snapshot.ts,
         session_ts=session_ts,
-        used_percent=live_snapshot.used_percent,
+        used_percent=used_percent,
         window_minutes=window,
         resets_at=resets_at,
         source=live_snapshot.source,
