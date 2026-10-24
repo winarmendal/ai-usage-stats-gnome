@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Fixed the Claude 5h gauge staying stuck on the previous window after a reset. When Anthropic's usage endpoint keeps answering HTTP 429, the helper serves the last good fetch. Once that fetch's reset time had passed, the helper moved the reset time forward but kept the old window's percentage, so the gauge could show, for example, 33% left for hours after a reset. It now rolls the expired window to 0% used, the same rule already used for Codex and Grok.
+- Bumped extension metadata to version 12.
+
 ## 0.6.0
 
 - Added **Grok Build** and **OpenCode** as new providers alongside Codex and Claude. Grok reads per-turn token counts from `~/.grok/sessions/**/usage.json` and a weekly credit percentage from `~/.grok/logs/unified.jsonl` (no 5-hour window exists for Grok). OpenCode reads assistant message token counts from its local SQLite database under `~/.local/share/opencode` (no rate-limit data exists on disk, so OpenCode shows a token total only). Both are local-first, read-only, and numeric-only, consistent with the existing privacy model (`docs/PRIVACY.md`). Both show up automatically once their data directory exists; "Track Grok" / "Track OpenCode" switches in Preferences can hide them.
