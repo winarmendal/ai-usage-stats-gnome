@@ -579,6 +579,21 @@ def collect_claude_events(
     return dedup_rows_to_events(all_rows), stats
 
 
+def claude_five_hour_absent(windows: Any) -> bool:
+    # Ultra accounts (since 2026-10-30) have no 5h session limit: the online usage
+    # response still reports seven_day but drops five_hour (missing or null). A
+    # reported five_hour, even an idle {utilization: 0, resets_at: null} one, means
+    # the account has the window.
+    # Only the online response may be judged this way. The statusline payload drops
+    # any window whose resets_at has passed, so a Pro capture taken right after a
+    # 5h reset also has seven_day without five_hour.
+    if not isinstance(windows, dict):
+        return False
+    return isinstance(windows.get(CLAUDE_LIMIT_KEYS["secondary"]), dict) and not isinstance(
+        windows.get(CLAUDE_LIMIT_KEYS["primary"]), dict
+    )
+
+
 def claude_snapshots_from_rate_limits(rate_limits: Any, ts: float) -> dict[str, LimitSnapshot]:
     snapshots: dict[str, LimitSnapshot] = {}
     if not isinstance(rate_limits, dict):
@@ -779,8 +794,9 @@ def project_claude_online_response(response: Any) -> dict[str, Any]:
         raw_reset = window_payload.get("resets_at")
         if isinstance(raw_reset, (str, int, float)):
             entry["resets_at"] = raw_reset
-        if entry:
-            projected[key] = entry
+        # Kept even when empty: a reported-but-blank window must stay distinct
+        # from a missing one, which claude_five_hour_absent reads as "no 5h limit".
+        projected[key] = entry
 
     scoped: list[dict[str, Any]] = []
     limits = response.get("limits")
@@ -871,11 +887,20 @@ def collect_claude_online_snapshots(
     fetched_at = number_or_none(cache.get("fetched_at")) or 0.0
     backoff_until = number_or_none(cache.get("backoff_until")) or 0.0
 
+    # claude_online_primary_absent: the data reports no 5h window AND was fetched
+    # recently enough to back the gauges (same max-age/future rule as
+    # merge_live_limit_snapshot). A stale cached answer neither hides nor un-hides
+    # the 5h row.
+    def primary_absent(data: dict[str, Any], data_ts: float) -> bool:
+        fresh = data_ts <= now_ts + 60 and now_ts - data_ts <= LIVE_LIMIT_MAX_AGE_SECONDS
+        return fresh and claude_five_hour_absent(data)
+
     def served(status: str) -> tuple[dict[str, LimitSnapshot], dict[str, int]]:
         stats["claude_online_status"] = status
         if cached_data is not None:
             snaps = claude_online_snapshots_from_response(cached_data, fetched_at, local_tz)
             stats["claude_online_snapshots"] = len(snaps)
+            stats["claude_online_primary_absent"] = primary_absent(cached_data, fetched_at)
             return snaps, stats
         return {}, stats
 
@@ -905,6 +930,7 @@ def collect_claude_online_snapshots(
         snaps = claude_online_snapshots_from_response(projected, now_ts, local_tz)
         stats["claude_online_status"] = "ok"
         stats["claude_online_snapshots"] = len(snaps)
+        stats["claude_online_primary_absent"] = primary_absent(projected, now_ts)
         return snaps, stats
 
     if status == "rate_limited":
@@ -1920,10 +1946,20 @@ def aggregate(
     primary_snapshot = merge_live_limit_snapshot("primary", primary_snapshot, live_limits.get("primary"), now)
     secondary_snapshot = merge_live_limit_snapshot("secondary", secondary_snapshot, live_limits.get("secondary"), now)
 
+    # A provider whose fresh limit source reports no 5h window at all (Claude Ultra)
+    # sets primary_absent; the source has already judged freshness. The row is
+    # emitted as the null payload flagged absent so the UI hides it.
+    primary_absent = bool(stats.get("primary_absent"))
+    if primary_absent:
+        primary_snapshot = None
+
     limits = {
         "primary": limit_payload(primary_snapshot, local_tz),
         "secondary": limit_payload(secondary_snapshot, local_tz),
     }
+    if primary_absent:
+        limits["primary"]["source"] = str(stats.get("primary_absent_source") or "") or None
+        limits["primary"]["absent"] = True
     # Per-model weekly buckets only exist when the Claude online source supplies
     # them; absent keys are skipped so the Codex/offline contract is unchanged.
     for extra_key in ("fable_weekly", "opus_weekly"):
@@ -2029,6 +2065,14 @@ def claude_source(
         stats.update(online_stats)
         # Online (live API) wins for 5h/Week and adds the per-model buckets.
         live_limits.update(online_limits)
+        # Fresh online data with no five_hour (Ultra): the account has no 5h window,
+        # so aggregate() drops any statusline/HUD 5h snapshot along with it.
+        # Carried as generic stats keys rather than a live_limits sentinel:
+        # live_limits stays a pure prefix -> LimitSnapshot map, aggregate only
+        # emits whitelisted status keys, and stats never reach a cache.
+        if online_stats.get("claude_online_primary_absent"):
+            stats["primary_absent"] = True
+            stats["primary_absent_source"] = "online"
     return events, stats, live_limits
 
 

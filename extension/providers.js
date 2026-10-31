@@ -23,7 +23,9 @@ export function expandHome(path) {
 //   defaultRoot  schema default for rootKey (shown in Preferences subtitles)
 //   gauges       'codex-freshest' (pick the freshest Codex windows) or a list of
 //                payload limits.<key> names; an empty list means the provider has
-//                no rate-limit data at all and only token totals are shown
+//                no rate-limit data at all and only token totals are shown; a
+//                listed gauge is hidden when the helper marks it `absent: true`
+//                (Claude Ultra has no 5h window, Pro/Max still do)
 //   extraGauges  additional limits.<key> rows, optionally gated on whenKey
 //   icon         icons/<icon>.svg (dark theme) / icons/<icon>-light.svg (light)
 export const PROVIDERS = [
