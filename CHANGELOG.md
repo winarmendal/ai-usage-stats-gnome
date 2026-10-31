@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
 
 - Claude's 5h row is now hidden for verified Ultra accounts when "Fetch live limits online" (Preferences → Claude) is on. On 2026-10-30 Anthropic renamed Max 20x to Ultra and removed the 5-hour session limit for verified Ultra accounts, so the 5h gauge sat on `--` forever. When the online usage endpoint returns a weekly window and no 5-hour window, and that answer is less than 24 hours old, the top bar and popover drop the 5h row, and the top bar reads like `Week 87%  Fable 100%`. Pro and Max accounts, and unverified Ultra accounts, keep their 5h row; an idle 5h window shows `--` until it starts, not 0%. The statusLine capture never hides the row, because Claude Code also leaves the 5-hour window out of it right after a reset on Pro and Max. Without online limits, an Ultra account still shows `5h --`. Codex, Grok, and OpenCode are unchanged. No new settings.
+- Bumped extension metadata to version 13.
 
 ## 0.6.1
 
