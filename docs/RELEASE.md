@@ -39,9 +39,10 @@ Then verify:
 - panel icon and popover remain legible in GNOME light and dark mode, for all four provider icons
 - popover shows one block per enabled, present provider at once (no tabs); toggling a "Track <Provider>" switch off, or renaming its data root away, removes that block on the next refresh
 - More Stats expands to one 7-day history list per visible provider in a single scroll area
-- Grok's block shows a Week gauge only (5h reads `--`/is absent); OpenCode's block shows a token total with no gauges
+- Grok's block shows a Week gauge only (no 5h row); OpenCode's block shows a token total with no gauges
 - Claude 5h and Week show `--` until the statusLine capture wrapper is installed (Preferences → Claude → "Install")
 - with "Fetch live limits online" enabled, the Fable row populates and stays visible (only briefly showing `--`, never disappearing)
+- on a verified Ultra account with online limits enabled, Claude shows Week and Fable with no 5h row; on a Pro/Max account the 5h row stays
 - `gnome-extensions disable` then `enable` (no re-login) leaves the popover showing real data: no per-provider "helper refresh cancelled" rows and no "Needs attention" subtitle
 - preferences open and persist, including the new Grok and OpenCode data-directory fields
 - no prompt, response text, or OAuth token appears in the UI or logs

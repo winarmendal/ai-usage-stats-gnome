@@ -582,8 +582,13 @@ export default class CodexStatsExtension extends Extension {
                 });
             }
         } else {
+            // A declared window the account does not have at all (Claude Ultra
+            // has no 5h window) is flagged `absent` by the helper and hidden;
+            // a window with no value yet still shows a "--" row.
             for (const key of provider.gauges || []) {
                 const limit = limits[key] || {};
+                if (limit.absent === true)
+                    continue;
                 rows.push({
                     label: limit.label || GAUGE_FALLBACK_LABELS[key] || key,
                     percent: limit.remaining_percent,

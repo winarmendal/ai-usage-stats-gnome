@@ -97,7 +97,7 @@ By default the extension makes no network calls. The optional **"Fetch live limi
 GET https://api.anthropic.com/api/oauth/usage
 ```
 
-This is the same endpoint Claude Code's own `/usage` view uses. It returns live 5-hour and weekly percentages plus per-model (Fable/Opus) weekly buckets that the offline statusLine source cannot provide.
+This is the same endpoint Claude Code's own `/usage` view uses. It returns live weekly percentages, a 5-hour percentage for accounts that still have a 5-hour window, plus per-model (Fable/Opus) weekly buckets that the offline statusLine source cannot provide.
 
 - **Authentication.** The request is authenticated with your existing local Claude login token, read **read-only** from `~/.claude/.credentials.json` (the file Claude Code itself maintains). The helper never writes that file, never refreshes the token, and never logs, stores, or transmits the token anywhere except as the `Authorization` header of this one request to Anthropic. If the token is absent or expired, the helper skips the request and falls back to the local statusLine source.
 - **What is sent.** Only the bearer token and the fixed request above — no prompts, no token history, no machine identifiers.

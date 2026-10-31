@@ -235,6 +235,36 @@ class ClaudeSourceTests(unittest.TestCase):
             self.assertEqual(payload["limits"]["primary"]["label"], "--")
             self.assertIsNone(payload["limits"]["primary"]["remaining_percent"])
 
+    def test_statusline_without_five_hour_is_not_absent(self) -> None:
+        # Claude Code drops a statusline window once its resets_at passes, so a Pro
+        # capture taken right after a 5h reset carries seven_day only. That is not
+        # an Ultra signal: the 5h row must stay (rendering --), never flagged absent.
+        weekly_only = {"seven_day": {"used_percentage": 31.0, "resets_at": 1782800000}}
+        now = "2026-06-25T12:00:00+07:00"
+        now_ts = helper.parse_now(now).timestamp()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"
+            root.mkdir(parents=True)
+            limits = Path(tmp) / "claude-limits.json"
+            limits.write_text(json.dumps(capture_file(weekly_only, now_ts - 120)))
+            payload = self.build(root, Path(tmp) / "cache.json", now, limits_file=limits)
+            primary = payload["limits"]["primary"]
+            self.assertNotIn("absent", primary)
+            self.assertEqual(primary["label"], "--")
+            self.assertIsNone(primary["used_percent"])
+            self.assertEqual(payload["limits"]["secondary"]["used_percent"], 31.0)
+            self.assertEqual(payload["limits"]["secondary"]["source"], "statusline")
+            for key in ("primary_absent", "primary_absent_source", "claude_online_primary_absent"):
+                self.assertNotIn(key, payload["status"])
+
+    def test_codex_payload_never_has_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            payload = helper.build_payload(root, Path(tmp) / "cache.json", True, helper.parse_now("2026-06-25T12:00:00+07:00"))
+            for limit in payload["limits"].values():
+                self.assertNotIn("absent", limit)
+
     def test_no_capture_renders_dashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "projects"
@@ -575,6 +605,165 @@ class ClaudeOnlineTests(unittest.TestCase):
             self.assertEqual(primary["resets_at"], "2026-10-25T02:50:00.747814+07:00")
             # The weekly window has not reset yet, so its cached value still stands.
             self.assertEqual(payload["limits"]["secondary"]["used_percent"], 65.0)
+
+    def online_payload(self, response: dict, limits_file: Path | None = None, now: str = "2026-06-26T04:00:00+07:00") -> dict:
+        # One ok fetch of `response` through the full claude provider pipeline.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"; root.mkdir(parents=True)
+            creds = Path(tmp) / ".credentials.json"
+            self.write_creds(creds, helper.parse_now(now).timestamp())
+            return self.build_online(
+                root, Path(tmp) / "cache.json", now, creds, _Opener(("ok", response)),
+                Path(tmp) / "online.json", limits_file=limits_file,
+            )
+
+    def assert_primary_absent(self, payload: dict, source: str) -> None:
+        primary = payload["limits"]["primary"]
+        self.assertIs(primary["absent"], True)
+        self.assertEqual(primary["source"], source)
+        self.assertEqual(primary["label"], "--")
+        for key in ("remaining_percent", "used_percent", "resets_at", "observed_at"):
+            self.assertIsNone(primary[key])
+
+    def test_online_missing_five_hour_marks_primary_absent(self) -> None:
+        resp = online_response()
+        del resp["five_hour"]
+        payload = self.online_payload(resp)
+        self.assert_primary_absent(payload, "online")
+        self.assertEqual(payload["limits"]["secondary"]["used_percent"], 36.0)
+        self.assertEqual(payload["limits"]["secondary"]["source"], "online")
+        self.assertEqual(payload["limits"]["fable_weekly"]["used_percent"], 4.0)
+
+    def test_online_null_five_hour_marks_primary_absent(self) -> None:
+        payload = self.online_payload(online_response(extra={"five_hour": None}))
+        self.assert_primary_absent(payload, "online")
+        self.assertEqual(payload["limits"]["secondary"]["used_percent"], 36.0)
+
+    def test_online_idle_five_hour_is_not_absent(self) -> None:
+        # A Pro user who has not used Claude lately: the 5h window exists but idle.
+        idle = online_response(extra={"five_hour": {"utilization": 0, "resets_at": None}})
+        payload = self.online_payload(idle)
+        self.assertNotIn("absent", payload["limits"]["primary"])
+        self.assertEqual(payload["limits"]["primary"]["label"], "--")
+        # Same for a reported window the projection keeps with no numeric fields.
+        for blank in ({}, {"utilization": None, "resets_at": None}):
+            projected = helper.project_claude_online_response(online_response(extra={"five_hour": blank}))
+            self.assertIn("five_hour", projected)
+            self.assertIs(helper.claude_five_hour_absent(projected), False)
+
+    def test_online_normal_response_has_no_absent_key(self) -> None:
+        payload = self.online_payload(online_response())
+        primary = payload["limits"]["primary"]
+        self.assertEqual(
+            set(primary), {"label", "remaining_percent", "used_percent", "resets_at", "observed_at", "source"}
+        )
+        self.assertEqual(primary["label"], "5h")
+        self.assertEqual(primary["used_percent"], 20.0)
+        self.assertEqual(primary["source"], "online")
+
+    def test_online_absent_drops_fresh_statusline_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            now = "2026-06-26T04:00:00+07:00"
+            now_ts = helper.parse_now(now).timestamp()
+            limits = Path(tmp) / "claude-limits.json"
+            cap_rl = {
+                "five_hour": {"used_percentage": 11.0, "resets_at": now_ts + 3000},
+                "seven_day": {"used_percentage": 31.0, "resets_at": now_ts + 300000},
+            }
+            limits.write_text(json.dumps(capture_file(cap_rl, now_ts - 120)))
+            resp = online_response()
+            del resp["five_hour"]
+            payload = self.online_payload(resp, limits_file=limits, now=now)
+            self.assert_primary_absent(payload, "online")
+            self.assertEqual(payload["limits"]["secondary"]["used_percent"], 36.0)
+
+    def test_online_ultra_start_of_week_idle_weekly_marks_absent(self) -> None:
+        # Ultra at the start of a week: seven_day is idle (no snapshot at all), yet
+        # the missing five_hour still means "no 5h window".
+        payload = self.online_payload({"seven_day": {"utilization": 0, "resets_at": None}})
+        self.assertEqual(payload["status"]["claude_online_status"], "ok")
+        self.assert_primary_absent(payload, "online")
+        self.assertNotIn("absent", payload["limits"]["secondary"])
+
+    def test_online_without_data_weekly_only_statusline_is_not_absent(self) -> None:
+        # No credentials and no cached online data: a weekly-only capture alone
+        # never hides the 5h row.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"; root.mkdir(parents=True)
+            now = "2026-06-26T04:00:00+07:00"
+            now_ts = helper.parse_now(now).timestamp()
+            limits = Path(tmp) / "claude-limits.json"
+            weekly_only = {"seven_day": {"used_percentage": 31.0, "resets_at": now_ts + 300000}}
+            limits.write_text(json.dumps(capture_file(weekly_only, now_ts - 120)))
+            payload = self.build_online(
+                root, Path(tmp) / "cache.json", now, Path(tmp) / "no-creds.json", _raise_opener,
+                Path(tmp) / "online.json", limits_file=limits,
+            )
+            self.assertEqual(payload["status"]["claude_online_status"], "no-credentials")
+            self.assertNotIn("absent", payload["limits"]["primary"])
+            self.assertEqual(payload["limits"]["primary"]["label"], "--")
+            self.assertEqual(payload["limits"]["secondary"]["used_percent"], 31.0)
+
+    def test_online_absent_served_from_cache_during_backoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "projects"; root.mkdir(parents=True)
+            ocache = Path(tmp) / "online.json"
+            creds = Path(tmp) / ".credentials.json"
+            now = "2026-06-26T04:00:00+07:00"
+            now_ts = helper.parse_now(now).timestamp()
+            self.write_creds(creds, now_ts)
+            resp = online_response()
+            del resp["five_hour"]
+            ocache.write_text(json.dumps({
+                "fetched_at": now_ts - 600,
+                "data": helper.project_claude_online_response(resp),
+                "backoff_until": now_ts + 120,
+            }))
+            payload = self.build_online(root, Path(tmp) / "cache.json", now, creds, _raise_opener, ocache)
+            self.assertEqual(payload["status"]["claude_online_status"], "backoff")
+            self.assert_primary_absent(payload, "online")
+            self.assertEqual(payload["limits"]["secondary"]["used_percent"], 36.0)
+
+    def test_online_stale_absence_is_ignored(self) -> None:
+        # Online data older than 24h no longer backs the gauges, so its "no 5h"
+        # answer must neither hide the row nor drop a fresh statusline 5h reading.
+        # Covered for both serve paths that reach a stale cache.
+        now = "2026-06-26T04:00:00+07:00"
+        now_ts = helper.parse_now(now).timestamp()
+        resp = online_response()
+        del resp["five_hour"]
+        cap_rl = {
+            "five_hour": {"used_percentage": 11.0, "resets_at": now_ts + 3000},
+            "seven_day": {"used_percentage": 31.0, "resets_at": now_ts + 300000},
+        }
+        for status in ("backoff", "token-expired"):
+            for with_capture in (False, True):
+                with self.subTest(status=status, with_capture=with_capture), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / "projects"; root.mkdir(parents=True)
+                    ocache = Path(tmp) / "online.json"
+                    creds = Path(tmp) / ".credentials.json"
+                    self.write_creds(creds, now_ts, expired=status == "token-expired")
+                    ocache.write_text(json.dumps({
+                        "fetched_at": now_ts - 25 * 3600,
+                        "data": helper.project_claude_online_response(resp),
+                        "backoff_until": now_ts + 120 if status == "backoff" else 0,
+                    }))
+                    limits = None
+                    if with_capture:
+                        limits = Path(tmp) / "claude-limits.json"
+                        limits.write_text(json.dumps(capture_file(cap_rl, now_ts - 120)))
+                    payload = self.build_online(
+                        root, Path(tmp) / "cache.json", now, creds, _raise_opener, ocache, limits_file=limits,
+                    )
+                    self.assertEqual(payload["status"]["claude_online_status"], status)
+                    primary = payload["limits"]["primary"]
+                    self.assertNotIn("absent", primary)
+                    if with_capture:
+                        self.assertEqual(primary["used_percent"], 11.0)
+                        self.assertEqual(primary["source"], "statusline")
+                    else:
+                        self.assertEqual(primary["label"], "--")
+                        self.assertIsNone(primary["source"])
 
     def test_online_cache_is_numeric_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
